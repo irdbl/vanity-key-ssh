@@ -32,31 +32,52 @@ python3 tools/gen_table.py table.bin && make gpu GPU_ARCH='-arch=native' && \
 SUFFIX='$SUFFIX' NTFY_TOPIC='$NTFY_TOPIC' bash scripts/entrypoint.sh"
 
 echo "searching offers: $GPU, <\$$MAX_DPH/hr..."
-# note: verified 4090s are scarce on vast; filter on reliability instead
+# Notes from live testing:
+# - verified 4090s are scarce on vast; filter on reliability instead
+# - offers go stale fast; without --cancel-unavail a failed schedule silently
+#   creates a STOPPED instance husk, so pass it and walk down the offer list
+# - pick a CUDA image the host driver supports (cuda_max_good)
 OFFERS=$(vastai search offers \
     "gpu_name=$GPU num_gpus=1 rentable=true reliability>0.95 dph<$MAX_DPH" \
     -o 'dph' --raw | python3 -c "
 import json, sys
-offers = json.load(sys.stdin)
-for o in offers[:$COUNT]:
-    print(o['id'], round(o['dph_total'], 3))
+for o in json.load(sys.stdin):
+    print(o['id'], round(o['dph_total'], 3), o.get('cuda_max_good') or 99)
 ")
 if [ -z "$OFFERS" ]; then
     echo "no offers matched; raise MAX_DPH or change GPU" >&2
     exit 1
 fi
-echo "$OFFERS"
 
 total_dph=0
-while read -r id dph; do
-    echo "renting offer $id (\$$dph/hr)..."
-    vastai create instance "$id" \
-        --image "$IMAGE" \
+rented=0
+while read -r id dph cuda; do
+    [ "$rented" -ge "$COUNT" ] && break
+    img=$IMAGE
+    if python3 -c "import sys; sys.exit(0 if float('$cuda') < 12.4 else 1)"; then
+        img="nvidia/cuda:12.2.2-devel-ubuntu22.04"
+    fi
+    echo "renting offer $id (\$$dph/hr, cuda<=$cuda, $img)..."
+    if out=$(vastai create instance "$id" \
+        --image "$img" \
         --disk 16 \
+        --cancel-unavail \
         --onstart-cmd "$ONSTART" \
-        --raw
-    total_dph=$(python3 -c "print(round($total_dph + $dph, 3))")
+        --raw 2>&1) && python3 -c "
+import json, sys
+d = json.loads('''$out''')
+sys.exit(0 if d.get('success') else 1)" 2>/dev/null; then
+        echo "$out"
+        rented=$((rented + 1))
+        total_dph=$(python3 -c "print(round($total_dph + $dph, 3))")
+    else
+        echo "  offer $id unavailable, trying next"
+    fi
 done <<<"$OFFERS"
+
+if [ "$rented" -lt "$COUNT" ]; then
+    echo "WARNING: only $rented/$COUNT instances scheduled; rerun later or raise MAX_DPH" >&2
+fi
 
 echo
 echo "fleet running at ~\$$total_dph/hr. Monitor with: ./scripts/vast_watch.sh"
