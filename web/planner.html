@@ -1,0 +1,590 @@
+<title>Vanity Key Planner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --ground: #f7f6f2;
+    --panel: #ffffff;
+    --panel-2: #f0eee7;
+    --border: #e2e0d8;
+    --border-strong: #cfccc0;
+    --text: #1c1c26;
+    --muted: #63637a;
+    --faint: #8a8a9c;
+    --accent: #b8860b;         /* gold, tuned for text on light */
+    --accent-fill: #ffc857;
+    --on-accent: #2a2205;
+    --cyan: #0e7d90;
+    --cyan-fill: #b8ecf3;
+    --warn: #b25a00;
+    --crit: #c0362c;
+    --good: #2f8f5b;
+    --shadow: 0 1px 2px rgba(20,20,32,.06), 0 8px 24px rgba(20,20,32,.06);
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #16161f;
+      --panel: #1e1e2b;
+      --panel-2: #26263a;
+      --border: #34344a;
+      --border-strong: #45455f;
+      --text: #e9e9f2;
+      --muted: #9a9ab2;
+      --faint: #72728c;
+      --accent: #ffc857;
+      --accent-fill: #ffc857;
+      --on-accent: #2a2205;
+      --cyan: #5ad1e0;
+      --cyan-fill: #14313a;
+      --warn: #ffb454;
+      --crit: #ff6b6b;
+      --good: #6ee7a0;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #16161f;
+    --panel: #1e1e2b;
+    --panel-2: #26263a;
+    --border: #34344a;
+    --border-strong: #45455f;
+    --text: #e9e9f2;
+    --muted: #9a9ab2;
+    --faint: #72728c;
+    --accent: #ffc857;
+    --accent-fill: #ffc857;
+    --on-accent: #2a2205;
+    --cyan: #5ad1e0;
+    --cyan-fill: #14313a;
+    --warn: #ffb454;
+    --crit: #ff6b6b;
+    --good: #6ee7a0;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.35);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--text);
+    font-family: "IBM Plex Sans", system-ui, sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: clamp(20px, 4vw, 44px) clamp(16px, 4vw, 40px) 64px; }
+
+  header.top { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; margin-bottom: 28px; }
+  .brand-eyebrow {
+    font-family: "IBM Plex Mono", monospace; font-size: 12px; letter-spacing: .18em;
+    text-transform: uppercase; color: var(--accent); margin: 0 0 6px;
+  }
+  h1 {
+    font-family: "Bricolage Grotesque", sans-serif; font-weight: 700;
+    font-size: clamp(30px, 5vw, 46px); line-height: 1.02; letter-spacing: -.02em;
+    margin: 0; text-wrap: balance; max-width: 16ch;
+  }
+  .sub { color: var(--muted); margin: 10px 0 0; max-width: 56ch; font-size: 15px; }
+
+  .theme-btn {
+    flex: none; appearance: none; cursor: pointer;
+    background: var(--panel); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 999px; padding: 8px 14px; font: inherit; font-size: 13px;
+    display: inline-flex; gap: 8px; align-items: center;
+  }
+  .theme-btn:hover { border-color: var(--border-strong); color: var(--text); }
+  .theme-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 22px; box-shadow: var(--shadow);
+  }
+  .card h2 {
+    font-family: "Bricolage Grotesque", sans-serif; font-weight: 600;
+    font-size: 13px; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 16px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .card h2 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-fill); flex: none; }
+
+  label.field-label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 7px; }
+  .suffix-input {
+    width: 100%; font-family: "IBM Plex Mono", monospace; font-size: 20px; letter-spacing: .04em;
+    padding: 12px 14px; border-radius: 8px; border: 1px solid var(--border-strong);
+    background: var(--panel-2); color: var(--text);
+  }
+  .suffix-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .suffix-input.invalid { border-color: var(--crit); }
+
+  .hint { font-size: 12.5px; color: var(--faint); margin: 8px 0 0; }
+  .hint code { font-family: "IBM Plex Mono", monospace; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 4px; }
+  .chip {
+    appearance: none; cursor: pointer; font: inherit;
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    width: 52px; padding: 8px 0 6px; border-radius: 8px;
+    border: 1px solid var(--border-strong); background: var(--panel-2); color: var(--text);
+    transition: transform .08s ease, border-color .12s ease;
+  }
+  .chip:hover { transform: translateY(-2px); }
+  .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .chip .glyph { font-family: "IBM Plex Mono", monospace; font-size: 22px; font-weight: 500; line-height: 1; }
+  .chip .mode { font-family: "IBM Plex Mono", monospace; font-size: 10px; letter-spacing: .04em; }
+  .chip[data-mode="exact"] { border-color: var(--border-strong); }
+  .chip[data-mode="exact"] .mode { color: var(--faint); }
+  .chip[data-mode="case"] { border-color: var(--cyan); background: var(--cyan-fill); }
+  .chip[data-mode="case"] .mode { color: var(--cyan); }
+  .chip[data-mode="any"] { border-color: var(--warn); }
+  .chip[data-mode="any"] .glyph { color: var(--warn); }
+  .chip[data-mode="any"] .mode { color: var(--warn); }
+  .chip.locked { opacity: .55; cursor: default; }
+  .chip.locked:hover { transform: none; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 14px; font-size: 12px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+
+  .regex-row { margin-top: 20px; display: grid; gap: 10px; }
+  .kv { font-size: 12px; color: var(--muted); }
+  .mono-out {
+    font-family: "IBM Plex Mono", monospace; font-size: 14px;
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 12px; overflow-x: auto; white-space: nowrap; color: var(--text);
+  }
+  .mono-out .fx { color: var(--accent); }
+
+  /* preview key */
+  .keybox {
+    font-family: "IBM Plex Mono", monospace; font-size: 15px; line-height: 1.7;
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px; word-break: break-all; position: relative;
+  }
+  .keybox .pfx { color: var(--muted); }
+  .keybox .mid { color: var(--text); }
+  .keybox .sfx {
+    color: var(--on-accent); background: var(--accent-fill);
+    border-radius: 3px; padding: 1px 2px; font-weight: 600;
+  }
+  .reshuffle {
+    position: absolute; top: 10px; right: 10px; appearance: none; cursor: pointer;
+    background: var(--panel); border: 1px solid var(--border); color: var(--muted);
+    border-radius: 6px; font: inherit; font-size: 12px; padding: 4px 9px;
+  }
+  .reshuffle:hover { color: var(--text); border-color: var(--border-strong); }
+  .reshuffle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .keycap { font-size: 12px; color: var(--faint); margin: 10px 2px 0; }
+
+  /* readout */
+  .readout { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .stat { background: var(--panel); padding: 16px 16px 14px; }
+  .stat.full { grid-column: 1 / -1; }
+  .stat .k { font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
+  .stat .v { font-family: "IBM Plex Mono", monospace; font-weight: 600; font-size: 26px; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
+  .stat .v small { font-size: 14px; font-weight: 500; color: var(--muted); }
+  .stat .note { font-size: 12px; color: var(--faint); margin: 4px 0 0; }
+  .v.cost-lo { color: var(--good); }
+  .v.cost-mid { color: var(--warn); }
+  .v.cost-hi { color: var(--crit); }
+
+  .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 18px; margin-top: 20px; }
+  .controls .full { grid-column: 1 / -1; }
+  .ctl label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+  .ctl input[type=number], .ctl select {
+    width: 100%; font-family: "IBM Plex Mono", monospace; font-size: 14px;
+    padding: 8px 10px; border-radius: 7px; border: 1px solid var(--border-strong);
+    background: var(--panel-2); color: var(--text);
+  }
+  .ctl input:focus-visible, .ctl select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .seg { display: flex; gap: 6px; }
+  .seg button {
+    flex: 1; cursor: pointer; font: inherit; font-size: 13px; padding: 8px 6px;
+    border-radius: 7px; border: 1px solid var(--border-strong); background: var(--panel-2); color: var(--muted);
+  }
+  .seg button[aria-pressed="true"] { background: var(--accent-fill); color: var(--on-accent); border-color: var(--accent-fill); font-weight: 600; }
+  .seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .warnbar {
+    margin-top: 16px; font-size: 13px; border-radius: 8px; padding: 10px 12px;
+    border: 1px solid; display: none;
+  }
+  .warnbar.show { display: block; }
+  .warnbar.warn { color: var(--warn); border-color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+  .warnbar.crit { color: var(--crit); border-color: var(--crit); background: color-mix(in srgb, var(--crit) 10%, transparent); }
+
+  .cli { margin-top: 22px; }
+  .cli h2 { margin-bottom: 12px; }
+  .footnote { color: var(--faint); font-size: 12.5px; margin: 26px 2px 0; max-width: 70ch; }
+  .footnote code { font-family: "IBM Plex Mono", monospace; }
+  a { color: var(--accent); }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div>
+      <p class="brand-eyebrow">vanity-key-ssh · hunt planner</p>
+      <h1>Shape the tail, watch the cost.</h1>
+      <p class="sub">Type the ending you want on your ed25519 SSH key, then click each character to loosen it. The estimate updates from the real search math and a measured RTX&nbsp;4090 rate.</p>
+    </div>
+    <button class="theme-btn" id="themeBtn" aria-label="Toggle color theme">◑ Theme</button>
+  </header>
+
+  <div class="grid">
+    <!-- LEFT: builder -->
+    <section class="card" aria-labelledby="b-h">
+      <h2 id="b-h"><span class="dot"></span>Pattern</h2>
+      <label class="field-label" for="suffix">Desired key ending (base64: A–Z a–z 0–9 + /)</label>
+      <input class="suffix-input" id="suffix" value="++k/Pham" maxlength="14" spellcheck="false" autocomplete="off" aria-describedby="suffix-hint">
+      <p class="hint" id="suffix-hint">Up to 10 characters match on the GPU fast path. Click a character below to cycle how strict it is.</p>
+
+      <div class="chips" id="chips" role="group" aria-label="Per-character constraints"></div>
+
+      <div class="legend">
+        <span><i style="background:var(--border-strong)"></i> exact</span>
+        <span><i style="background:var(--cyan-fill);border:1px solid var(--cyan)"></i> either case <code style="font-size:11px">[Aa]</code></span>
+        <span><i style="background:var(--warn)"></i> any character <code style="font-size:11px">.</code></span>
+      </div>
+
+      <div class="regex-row">
+        <div>
+          <div class="kv">Regex</div>
+          <div class="mono-out" id="regexOut"></div>
+        </div>
+        <div>
+          <div class="kv">Accepted variants</div>
+          <div class="mono-out" id="variantsOut"></div>
+        </div>
+      </div>
+
+      <div class="warnbar" id="warnbar"></div>
+    </section>
+
+    <!-- RIGHT: preview + readout -->
+    <section class="card" aria-labelledby="p-h">
+      <h2 id="p-h"><span class="dot"></span>A key that would match</h2>
+      <div class="keybox">
+        <button class="reshuffle" id="reshuffle">↻ another</button>
+        <span id="keyPreview"></span>
+      </div>
+      <p class="keycap">Illustrative only — the leading <code>ssh-ed25519 AAAA…</code> is fixed by the key format; the middle is random; the highlighted tail is one instance of your pattern.</p>
+
+      <h2 style="margin-top:26px"><span class="dot"></span>Estimate</h2>
+      <div class="readout">
+        <div class="stat">
+          <p class="k">Difficulty</p>
+          <div class="v" id="difficulty">—</div>
+          <p class="note" id="difficultyNote"></p>
+        </div>
+        <div class="stat">
+          <p class="k">Expected cost</p>
+          <div class="v" id="cost">—</div>
+          <p class="note" id="costNote">mean; fleet size doesn't change this</p>
+        </div>
+        <div class="stat">
+          <p class="k">Wall-clock (mean)</p>
+          <div class="v" id="wall">—</div>
+          <p class="note" id="wallNote"></p>
+        </div>
+        <div class="stat">
+          <p class="k">Spread</p>
+          <div class="v" id="spread" style="font-size:15px;line-height:1.5">—</div>
+          <p class="note">median · 95th percentile cost</p>
+        </div>
+      </div>
+
+      <div class="controls">
+        <div class="ctl full">
+          <label>Pricing</label>
+          <div class="seg" id="priceSeg" role="group" aria-label="Pricing model">
+            <button data-price="0.35" aria-pressed="true">On-demand&nbsp;$0.35/hr</button>
+            <button data-price="0.23" aria-pressed="false">Interruptible&nbsp;$0.23/hr</button>
+          </div>
+        </div>
+        <div class="ctl">
+          <label for="rate">Rate per GPU (Mkeys/s)</label>
+          <input type="number" id="rate" value="334" min="1" step="1">
+        </div>
+        <div class="ctl">
+          <label for="fleet">Fleet size (GPUs)</label>
+          <input type="number" id="fleet" value="10" min="1" step="1">
+        </div>
+        <div class="ctl">
+          <label for="price">$/GPU-hr</label>
+          <input type="number" id="price" value="0.35" min="0.01" step="0.01">
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <section class="card cli" aria-labelledby="c-h">
+    <h2 id="c-h"><span class="dot"></span>Command</h2>
+    <div class="mono-out" id="cliOut"></div>
+    <p class="hint" id="cliHint"></p>
+  </section>
+
+  <p class="footnote">
+    Difficulty is <code>64^L</code> divided by the number of accepted variants — each “either case” letter halves the work, each “any character” slot divides it by 64. Cost scales with total attempts, so a bigger fleet buys wall-clock, not dollars. The search is geometric: median ≈ 0.69× the mean, and you need ≈3× the mean for 95% confidence. Rate default is the measured 16-bit-comb throughput on one RTX 4090. Non-letters (digits, <code>+</code>, <code>/</code>) get no case discount.
+  </p>
+</div>
+
+<script>
+  const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const PREFIX = "AAAAC3NzaC1lZDI1NTE5AAAAI"; // 25 fixed chars of every ed25519 pubkey blob
+  const TOTAL = 68;
+  const isLetter = c => /[A-Za-z]/.test(c);
+  const isB64 = c => B64.includes(c);
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  const el = id => document.getElementById(id);
+  const suffixInput = el("suffix");
+  let modes = [];      // per-position: "exact" | "case" | "any"
+  let price = 0.35;
+
+  function rebuildModes() {
+    const s = suffixInput.value;
+    const next = [];
+    for (let i = 0; i < s.length; i++) {
+      const prev = modes[i];
+      const c = s[i];
+      if (prev === "any") next[i] = "any";
+      else if (prev === "case" && isLetter(c)) next[i] = "case";
+      else next[i] = "exact";
+    }
+    modes = next;
+  }
+
+  function optionsAt(i) {
+    const c = suffixInput.value[i];
+    if (!isB64(c)) return 1;
+    if (modes[i] === "any") return 64;
+    if (modes[i] === "case" && isLetter(c)) return 2;
+    return 1;
+  }
+
+  function cycleMode(i) {
+    const c = suffixInput.value[i];
+    if (!isB64(c)) return;
+    if (isLetter(c)) {
+      modes[i] = modes[i] === "exact" ? "case" : modes[i] === "case" ? "any" : "exact";
+    } else {
+      modes[i] = modes[i] === "exact" ? "any" : "exact";
+    }
+    render();
+  }
+
+  function renderChips() {
+    const box = el("chips");
+    box.innerHTML = "";
+    const s = suffixInput.value;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      const valid = isB64(c);
+      const m = valid ? modes[i] : "exact";
+      const btn = document.createElement("button");
+      btn.className = "chip" + (valid ? "" : " locked");
+      btn.dataset.mode = m;
+      btn.type = "button";
+      const modeLabel = !valid ? "bad" : m === "case" ? "Aa" : m === "any" ? "any" : "fix";
+      btn.innerHTML = `<span class="glyph">${c === " " ? "␣" : escapeHtml(c)}</span><span class="mode">${modeLabel}</span>`;
+      if (valid) {
+        btn.setAttribute("aria-label", `Character ${i + 1}: ${c}, mode ${m}. Click to change.`);
+        btn.addEventListener("click", () => cycleMode(i));
+      } else {
+        btn.setAttribute("aria-label", `Character ${i + 1}: ${c} is not base64`);
+      }
+      box.appendChild(btn);
+    }
+  }
+
+  function escapeHtml(c) { return c.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+  function escapeRegex(c) { return /[.*+?^${}()|[\]\\/]/.test(c) ? "\\" + c : c; }
+
+  function buildRegex() {
+    const s = suffixInput.value;
+    let out = "";
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (!isB64(c)) { out += `<span style="color:var(--crit)">${escapeHtml(c)}</span>`; continue; }
+      if (modes[i] === "any") out += `<span class="fx">.</span>`;
+      else if (modes[i] === "case") out += `<span class="fx">[${c.toUpperCase()}${c.toLowerCase()}]</span>`;
+      else out += escapeHtml(escapeRegex(c));
+    }
+    return "/" + out + "$/";
+  }
+
+  // enumerate accepted variants (bounded)
+  function enumerateVariants(cap) {
+    const s = suffixInput.value;
+    let acc = [""];
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      let opts;
+      if (!isB64(c)) opts = [c];
+      else if (modes[i] === "any") opts = B64.split("");
+      else if (modes[i] === "case" && isLetter(c)) opts = [c.toUpperCase(), c.toLowerCase()];
+      else opts = [c];
+      const next = [];
+      for (const a of acc) for (const o of opts) { next.push(a + o); if (next.length > cap) return null; }
+      acc = next;
+    }
+    return acc;
+  }
+
+  function fmtBig(x) {
+    if (x < 1000) return x.toFixed(0);
+    const e = Math.floor(Math.log10(x));
+    return (x / Math.pow(10, e)).toFixed(2) + "e" + e;
+  }
+  function fmtMoney(x) {
+    if (x < 0.01) return "<$0.01";
+    if (x < 10) return "$" + x.toFixed(2);
+    if (x < 1000) return "$" + x.toFixed(0);
+    return "$" + Math.round(x).toLocaleString();
+  }
+  function fmtTime(sec) {
+    if (!isFinite(sec)) return "∞";
+    const u = [["s",1],["min",60],["h",3600],["days",86400],["mo",2629800],["yr",31557600]];
+    let pick = u[0];
+    for (const p of u) if (sec >= p[1]) pick = p;
+    const v = sec / pick[1];
+    return (v < 10 ? v.toFixed(1) : Math.round(v).toLocaleString()) + " " + pick[0];
+  }
+
+  function computeBits() {
+    let bits = 0, variants = 1, badLen = 0;
+    const s = suffixInput.value;
+    for (let i = 0; i < s.length; i++) {
+      if (!isB64(s[i])) { badLen++; continue; }
+      const o = optionsAt(i);
+      bits += 6 - Math.log2(o);
+      variants *= o;
+    }
+    return { bits, variants, len: s.length - badLen, hasBad: badLen > 0 };
+  }
+
+  function render() {
+    renderChips();
+    el("regexOut").innerHTML = buildRegex();
+    suffixInput.classList.toggle("invalid", [...suffixInput.value].some(c => c && !isB64(c)));
+
+    const { bits, variants, len, hasBad } = computeBits();
+    const attempts = Math.pow(2, bits);
+    el("variantsOut").textContent = variants > 1048576
+      ? fmtBig(variants) + "  (exceeds 2^20 matcher cap)"
+      : variants.toLocaleString();
+
+    el("difficulty").innerHTML = `2<small>${bits.toFixed(0)}</small> <small>≈ ${fmtBig(attempts)}</small>`;
+    el("difficultyNote").textContent = `${len} constrained char${len===1?"":"s"} · ${variants.toLocaleString()} accepted ending${variants===1?"":"s"}`;
+
+    const rate = Math.max(1, +el("rate").value) * 1e6;
+    const fleet = Math.max(1, Math.floor(+el("fleet").value));
+    price = Math.max(0.01, +el("price").value);
+
+    // cost is fleet-independent: (attempts / rate_per_gpu) hours * price_per_gpu
+    const gpuSeconds = attempts / rate;
+    const costMean = gpuSeconds / 3600 * price;
+    const wallMean = attempts / (rate * fleet);
+
+    const costEl = el("cost");
+    costEl.textContent = fmtMoney(costMean);
+    costEl.className = "v " + (costMean < 25 ? "cost-lo" : costMean < 250 ? "cost-mid" : "cost-hi");
+    el("wall").textContent = fmtTime(wallMean);
+    el("wallNote").textContent = `${fleet} GPU${fleet===1?"":"s"} @ ${(rate/1e6)|0} Mkeys/s each`;
+    el("spread").innerHTML = `${fmtMoney(costMean*0.69)} <small style="color:var(--muted)">·</small> ${fmtMoney(costMean*3)}`;
+
+    // warnings
+    const wb = el("warnbar");
+    let msg = "", cls = "";
+    if (hasBad) { msg = "Some characters aren't valid base64 (A–Z a–z 0–9 + /) — they can't appear in a key and are ignored in the estimate."; cls = "crit"; }
+    else if (len > 10) { msg = `${len} characters exceeds the 10-char GPU fast path. The hunt still works but each candidate pays a full comparison; treat the estimate as a floor.`; cls = "warn"; }
+    else if (variants > 1048576) { msg = "More than 2^20 accepted variants — beyond the kernel's compiled-matcher cap. Tighten a wildcard slot."; cls = "crit"; }
+    wb.className = "warnbar" + (msg ? " show " + cls : "");
+    wb.textContent = msg;
+
+    renderCli(variants);
+  }
+
+  function renderCli(variants) {
+    const s = suffixInput.value;
+    const out = el("cliOut");
+    const hint = el("cliHint");
+    if ([...s].some(c => c && !isB64(c)) || s.length === 0) {
+      out.textContent = "—"; hint.textContent = "Fix the pattern to generate a command."; return;
+    }
+    const letterModes = [...s].map((c,i)=> isLetter(c) ? modes[i] : null).filter(m=>m!==null);
+    const allLettersCase = letterModes.length > 0 && letterModes.every(m => m === "case");
+    const anyWild = modes.some(m => m === "any");
+    const anyCase = modes.some(m => m === "case");
+
+    if (variants === 1) {
+      out.innerHTML = `./bin/gpu_vanity --table table16.bin --suffix <span class="fx">'${escapeHtml(s)}'</span>`;
+      hint.textContent = "Single exact target.";
+    } else if (allLettersCase && !anyWild) {
+      out.innerHTML = `./bin/gpu_vanity --table table16.bin --suffix <span class="fx">'${escapeHtml(s.toLowerCase())}'</span> --ci`;
+      hint.textContent = "--ci makes every letter case-insensitive. For a fleet: CI=1 SUFFIX='"+s.toLowerCase()+"' ./scripts/vast_launch.sh";
+    } else {
+      const list = enumerateVariants(256);
+      if (list) {
+        out.innerHTML = "./bin/gpu_vanity --table table16.bin \\\n  " +
+          list.map(v => `--suffix <span class="fx">'${escapeHtml(v)}'</span>`).join(" ");
+        hint.textContent = `${list.length} explicit targets (some letters case-flexed, or a mix the single --ci switch can't express).`;
+      } else {
+        out.textContent = "# too many variants to enumerate — tighten the wildcard slots";
+        hint.textContent = anyWild ? "Wildcard slots explode the target list; keep the total under a few hundred, or under 2^20 for the kernel." : "";
+      }
+    }
+  }
+
+  // ---- live preview key ----
+  function randB64(n) { let s = ""; for (let i = 0; i < n; i++) s += B64[Math.floor(Math.random()*64)]; return s; }
+  function sampleSuffix() {
+    const s = suffixInput.value;
+    let out = "";
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (!isB64(c)) { out += c; continue; }
+      if (modes[i] === "any") out += B64[Math.floor(Math.random()*64)];
+      else if (modes[i] === "case" && isLetter(c)) out += Math.random() < 0.5 ? c.toUpperCase() : c.toLowerCase();
+      else out += c;
+    }
+    return out;
+  }
+  function renderPreview() {
+    const sfx = sampleSuffix();
+    const midLen = Math.max(0, TOTAL - PREFIX.length - [...sfx].length);
+    let mid = randB64(midLen);
+    // char right after the fixed prefix is always A–P in real keys; nudge it
+    if (mid.length) mid = "ABCDEFGHIJKLMNOP"[Math.floor(Math.random()*16)] + mid.slice(1);
+    el("keyPreview").innerHTML =
+      `<span class="pfx">ssh-ed25519 ${PREFIX}</span><span class="mid">${escapeHtml(mid)}</span><span class="sfx">${escapeHtml(sfx)}</span>`;
+  }
+
+  // ---- events ----
+  suffixInput.addEventListener("input", () => { rebuildModes(); render(); renderPreview(); });
+  ["rate","fleet","price"].forEach(id => el(id).addEventListener("input", render));
+  el("reshuffle").addEventListener("click", renderPreview);
+  el("priceSeg").addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b) return;
+    [...el("priceSeg").children].forEach(x => x.setAttribute("aria-pressed", x === b));
+    el("price").value = b.dataset.price;
+    render();
+  });
+
+  const themeBtn = el("themeBtn");
+  themeBtn.addEventListener("click", () => {
+    const cur = document.documentElement.getAttribute("data-theme");
+    const dark = cur ? cur === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
+    document.documentElement.setAttribute("data-theme", dark ? "light" : "dark");
+  });
+
+  // init: open on the all-exact pattern so loosening a character is the
+  // first thing you discover.
+  rebuildModes();
+  render();
+  renderPreview();
+  if (!reduced) setInterval(renderPreview, 2200);
+</script>
