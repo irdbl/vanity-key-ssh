@@ -43,6 +43,15 @@ Notes:
 - Matching is currently case-sensitive/exact. Case-insensitive matching
   (accept `PHAM`/`pham`/...) would cut difficulty ~1 bit per letter but
   needs multi-target compare in the kernel (straightforward extension).
+- **No incremental-addition trick.** `mkp224o` (Tor v3 onion vanity) skips
+  the per-candidate scalar mult by walking `A += 8B` and keeping the raw
+  scalar — ~15-25× faster. It is deliberately *not* used here: an OpenSSH
+  private key stores the 32-byte seed and derives the scalar as
+  `clamp(SHA512(seed))`, so a found scalar has no seed preimage and cannot be
+  written as a standard key file. Every candidate therefore pays a full
+  fixed-base scalar mult (224 field muls, the floor for seed-derived keys).
+  Tor gets away with it only because its key format stores the expanded
+  scalar directly.
 
 ## Quickstart
 
@@ -57,6 +66,7 @@ make test                              # cross-checks vs RFC 8032 + ssh-keygen
 # GPU hunt (needs nvcc; on the CUDA box):
 make gpu
 ./bin/gpu_vanity --suffix ++pham
+./bin/gpu_vanity --suffix ++pham --benchmark   # measure keys/s and exit
 ```
 
 On a find:
@@ -86,6 +96,13 @@ SUFFIX='++pham' COUNT=10 MAX_DPH=0.45 ./scripts/vast_launch.sh
 AUTO_DESTROY=1 ./scripts/vast_watch.sh     # polls logs, tears fleet down on find
 ```
 
+`vast_launch.sh` records the instance IDs it creates in `.vast_fleet`, and
+`vast_watch.sh` only ever monitors/destroys that list — it never touches
+unrelated instances in your account. Delete `.vast_fleet` to start a fresh
+hunt record. Set `BID=1` on launch for interruptible (spot) bids: the search
+is memoryless, so being outbid costs only the in-flight launch, typically for
+30-50% less than on-demand.
+
 No coordination is needed between workers: each instance draws a random
 128-bit base for its seed space, and the search is memoryless — the chance
 of two workers colliding is negligible, so N workers ≈ N× throughput.
@@ -103,8 +120,10 @@ Optional `NTFY_TOPIC=<topic>` sends a content-free ntfy.sh ping on a find
   entropy, hashed through SHA-512 per RFC 8032 like any normal ed25519 key.
   A vanity suffix reveals nothing an attacker couldn't read off your public
   key anyway; security of the found keys is standard ed25519.
-- `keytool.py privkey` writes the key file with mode 0600, unencrypted.
-  Add a passphrase afterwards: `ssh-keygen -p -f ~/.ssh/id_ed25519_vanity`.
+- `keytool.py privkey` writes the key file with mode 0600, unencrypted, and
+  refuses to overwrite an existing file (so a found key is never silently
+  clobbered or left with a pre-existing laxer mode). Add a passphrase
+  afterwards: `ssh-keygen -p -f ~/.ssh/id_ed25519_vanity`.
 
 ## How it's fast
 

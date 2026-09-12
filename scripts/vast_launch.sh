@@ -10,6 +10,9 @@
 #   MAX_DPH     max $/hr per instance                 [0.50]
 #   REPO        public git URL instances clone        [git remote origin]
 #   NTFY_TOPIC  optional ntfy.sh topic for a content-free "found" ping
+#   BID         set to 1 for interruptible bids        [off]
+#               (memoryless search loses only the in-flight launch if outbid;
+#                typically 30-50% cheaper than on-demand)
 #
 # Requires: pip install vastai; vastai set api-key <key>
 # Random search is memoryless, so instances need no coordination — each picks
@@ -25,6 +28,11 @@ MAX_DPH=${MAX_DPH:-0.50}
 REPO=${REPO:-$(git remote get-url origin)}
 NTFY_TOPIC=${NTFY_TOPIC:-}
 IMAGE=${IMAGE:-nvidia/cuda:12.4.1-devel-ubuntu22.04}
+BID=${BID:-}
+# Instances created by this hunt are recorded here so vast_watch.sh destroys
+# only this fleet, never unrelated instances in the account. Appends across
+# reruns that top up the fleet; delete it to start a fresh hunt record.
+FLEET_FILE=${FLEET_FILE:-.vast_fleet}
 
 ONSTART="apt-get update && apt-get install -y --no-install-recommends git python3 curl ca-certificates && \
 git clone --depth 1 '$REPO' /app && cd /app && \
@@ -57,17 +65,26 @@ while read -r id dph cuda; do
     if python3 -c "import sys; sys.exit(0 if float('$cuda') < 12.4 else 1)"; then
         img="nvidia/cuda:12.2.2-devel-ubuntu22.04"
     fi
-    echo "renting offer $id (\$$dph/hr, cuda<=$cuda, $img)..."
+    bid_args=()
+    if [ -n "$BID" ]; then bid_args=(--bid "$dph"); fi
+    echo "renting offer $id (\$$dph/hr${BID:+, interruptible bid}, cuda<=$cuda, $img)..."
     if out=$(vastai create instance "$id" \
         --image "$img" \
         --disk 16 \
         --cancel-unavail \
+        ${bid_args[@]+"${bid_args[@]}"} \
         --onstart-cmd "$ONSTART" \
         --raw 2>&1) && python3 -c "
 import json, sys
 d = json.loads('''$out''')
 sys.exit(0 if d.get('success') else 1)" 2>/dev/null; then
         echo "$out"
+        iid=$(python3 -c "import json,sys; print(json.loads('''$out''').get('new_contract',''))" 2>/dev/null || true)
+        if [ -n "$iid" ]; then
+            echo "$iid" >>"$FLEET_FILE"
+        else
+            echo "  WARNING: could not record instance id for offer $id; destroy it manually" >&2
+        fi
         rented=$((rented + 1))
         total_dph=$(python3 -c "print(round($total_dph + $dph, 3))")
     else
@@ -80,6 +97,7 @@ if [ "$rented" -lt "$COUNT" ]; then
 fi
 
 echo
+echo "recorded $(wc -l <"$FLEET_FILE" 2>/dev/null | tr -d ' ') instance id(s) in $FLEET_FILE"
 echo "fleet running at ~\$$total_dph/hr. Monitor with: ./scripts/vast_watch.sh"
 echo "IMPORTANT: instances keep billing until destroyed — vast_watch.sh with AUTO_DESTROY=1"
 echo "tears the whole fleet down when a match is found."

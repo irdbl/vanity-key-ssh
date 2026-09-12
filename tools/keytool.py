@@ -125,12 +125,24 @@ def main() -> int:
         comment = sys.argv[4] if len(sys.argv) > 4 else "vanity"
         out = sys.argv[3] if len(sys.argv) > 3 else "id_ed25519_vanity"
         data = openssh_private_key(seed, comment)
-        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        pub_path = out + ".pub"
+        # O_EXCL: never overwrite an existing key, and never inherit a laxer
+        # mode from a pre-existing file (O_CREAT's mode only applies on create).
+        try:
+            fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            print(f"refusing to overwrite existing {out}", file=sys.stderr)
+            return 1
         with os.fdopen(fd, "wb") as f:
             f.write(data)
-        with open(out + ".pub", "w") as f:
+        try:
+            pfd = os.open(pub_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            print(f"refusing to overwrite existing {pub_path}", file=sys.stderr)
+            return 1
+        with os.fdopen(pfd, "w") as f:
             f.write(pub_line(seed_to_public(seed), comment) + "\n")
-        print(f"wrote {out} and {out}.pub")
+        print(f"wrote {out} and {pub_path}")
         print(pub_line(seed_to_public(seed), comment))
         return 0
 

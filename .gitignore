@@ -5,3 +5,5 @@ __pycache__/
 *.pyc
 .venv/
 id_ed25519*
+.vast_fleet
+.pytest_cache/

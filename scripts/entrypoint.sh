@@ -14,14 +14,18 @@ NGPU=$(nvidia-smi -L | wc -l)
 echo "starting $NGPU miner(s) for suffix '$SUFFIX'"
 pids=()
 for i in $(seq 0 $((NGPU - 1))); do
-    stdbuf -oL ./bin/gpu_vanity --suffix "$SUFFIX" --device "$i" 2>&1 \
-        | stdbuf -oL tee "$OUT/gpu_$i.log" &
+    # Process substitution (not a pipe) so $! is the miner's PID, not tee's:
+    # killing tee would leave the GPU searcher running until a later pipe write.
+    # stdbuf execs gpu_vanity, so the recorded PID is the miner itself.
+    stdbuf -oL ./bin/gpu_vanity --suffix "$SUFFIX" --device "$i" \
+        > >(stdbuf -oL tee "$OUT/gpu_$i.log") 2>&1 &
     pids+=($!)
 done
 
 while sleep 5; do
     if grep -qs '^FOUND' "$OUT"/gpu_*.log; then
         kill "${pids[@]}" 2>/dev/null
+        wait "${pids[@]}" 2>/dev/null
         break
     fi
     alive=0

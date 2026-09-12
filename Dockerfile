@@ -1,4 +1,6 @@
-FROM nvidia/cuda:12.4.1-devel-ubuntu22.04
+# 12.8+ so the default GPU_ARCH (which now includes sm_100/sm_120 Blackwell)
+# compiles. Override GPU_ARCH for an older toolkit.
+FROM nvidia/cuda:12.8.1-devel-ubuntu22.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 curl ca-certificates && rm -rf /var/lib/apt/lists/*

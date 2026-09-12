@@ -22,7 +22,8 @@ VK_HD ge_p3 ge_identity() {
 }
 
 // r = p + (yplusx, yminusx, xy2d)   [mixed addition via P1P1]
-VK_HD void ge_madd(ge_p3 &r, const ge_p3 &p, const fe &yplusx, const fe &yminusx, const fe &xy2d) {
+// need_t=false skips r.T when the caller will not read it (last comb window).
+VK_HD void ge_madd(ge_p3 &r, const ge_p3 &p, const fe &yplusx, const fe &yminusx, const fe &xy2d, bool need_t = true) {
     fe A = fe_mul(fe_add(p.Y, p.X), yplusx);
     fe B = fe_mul(fe_sub(p.Y, p.X), yminusx);
     fe C = fe_mul(p.T, xy2d);
@@ -34,12 +35,12 @@ VK_HD void ge_madd(ge_p3 &r, const ge_p3 &p, const fe &yplusx, const fe &yminusx
     r.X = fe_mul(X3, T3);
     r.Y = fe_mul(Y3, Z3);
     r.Z = fe_mul(Z3, T3);
-    r.T = fe_mul(X3, Y3);
+    if (need_t) r.T = fe_mul(X3, Y3);
 }
 
 // A = scalar * B using the precomputed table; scalar given as 32 clamped bytes.
 VK_HD ge_p3 ge_scalarmult_base(const uint8_t *table, const uint8_t scalar[32]) {
-    ge_p3 r = ge_identity();
+    ge_p3 r;
     for (int i = 0; i < 32; i++) {
         const uint8_t *e = table + ((size_t)(i * 256 + scalar[i])) * 96;
         uint64_t w[12];  // entries are 8-byte aligned; memcpy compiles to wide loads
@@ -47,7 +48,22 @@ VK_HD ge_p3 ge_scalarmult_base(const uint8_t *table, const uint8_t scalar[32]) {
         fe yplusx = fe_from_u64x4(w[0], w[1], w[2], w[3]);
         fe yminusx = fe_from_u64x4(w[4], w[5], w[6], w[7]);
         fe xy2d = fe_from_u64x4(w[8], w[9], w[10], w[11]);
-        ge_madd(r, r, yplusx, yminusx, xy2d);
+        if (i == 0) {
+            // First addition is to the identity (X=0,Y=1,Z=1,T=0), so ge_madd
+            // collapses: A=yplusx, B=yminusx, C=0, D=Z3=T3=2. Only r.T needs a
+            // multiply; the rest are doublings. 7 fe_mul -> 1.
+            fe X3 = fe_sub(yplusx, yminusx);
+            fe Y3 = fe_add(yplusx, yminusx);
+            // Reduce the doublings: fe_add leaves ~2^55 limbs, but the next
+            // window feeds r.X/r.Y through fe_sub, which needs a < ~2^54 input.
+            r.X = fe_reduce(fe_add(X3, X3));   // 2*X3 (Z3=2)
+            r.Y = fe_reduce(fe_add(Y3, Y3));   // 2*Y3 (T3=2)
+            r.Z = fe{{4, 0, 0, 0, 0}};         // Z3*T3 = 4
+            r.T = fe_mul(X3, Y3);
+        } else {
+            // Last window: nothing after the loop reads r.T, so skip it.
+            ge_madd(r, r, yplusx, yminusx, xy2d, i != 31);
+        }
     }
     return r;
 }

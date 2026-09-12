@@ -33,6 +33,19 @@ VK_HD fe fe_sub(const fe &a, const fe &b) {
     return r;
 }
 
+// One carry pass: brings limbs (up to ~2^55 after a doubling) back below
+// ~2^51, small enough to serve as a fe_sub subtrahend without underflow.
+VK_HD fe fe_reduce(const fe &a) {
+    fe h = a;
+    uint64_t c;
+    c = h.v[0] >> 51; h.v[0] &= VK_M51; h.v[1] += c;
+    c = h.v[1] >> 51; h.v[1] &= VK_M51; h.v[2] += c;
+    c = h.v[2] >> 51; h.v[2] &= VK_M51; h.v[3] += c;
+    c = h.v[3] >> 51; h.v[3] &= VK_M51; h.v[4] += c;
+    c = h.v[4] >> 51; h.v[4] &= VK_M51; h.v[0] += c * 19;
+    return h;
+}
+
 VK_HD fe fe_mul(const fe &f, const fe &g) {
     const uint64_t f0 = f.v[0], f1 = f.v[1], f2 = f.v[2], f3 = f.v[3], f4 = f.v[4];
     const uint64_t g0 = g.v[0], g1 = g.v[1], g2 = g.v[2], g3 = g.v[3], g4 = g.v[4];
@@ -55,7 +68,33 @@ VK_HD fe fe_mul(const fe &f, const fe &g) {
     return r;
 }
 
-VK_HD fe fe_sq(const fe &f) { return fe_mul(f, f); }
+// Dedicated squaring (curve25519-donna-c64 style): symmetric cross terms are
+// counted once, so a square costs ~10 wide products instead of the 25 in
+// fe_mul. Inputs come from reduced fe outputs (limbs < ~2^52), so the widened
+// temporaries d0..d4 stay well within the 128-bit accumulators.
+VK_HD fe fe_sq(const fe &f) {
+    const uint64_t r0 = f.v[0], r1 = f.v[1], r2 = f.v[2], r3 = f.v[3], r4 = f.v[4];
+    const uint64_t d0 = r0 * 2;
+    const uint64_t d1 = r1 * 2;
+    const uint64_t d2 = r2 * 2 * 19;
+    const uint64_t d419 = r4 * 19;
+    const uint64_t d4 = d419 * 2;
+    vk_u128 t0 = (vk_u128)r0 * r0 + (vk_u128)d4 * r1 + (vk_u128)d2 * r3;
+    vk_u128 t1 = (vk_u128)d0 * r1 + (vk_u128)d4 * r2 + (vk_u128)r3 * (r3 * 19);
+    vk_u128 t2 = (vk_u128)d0 * r2 + (vk_u128)r1 * r1 + (vk_u128)d4 * r3;
+    vk_u128 t3 = (vk_u128)d0 * r3 + (vk_u128)d1 * r2 + (vk_u128)r4 * d419;
+    vk_u128 t4 = (vk_u128)d0 * r4 + (vk_u128)d1 * r3 + (vk_u128)r2 * r2;
+    fe r;
+    uint64_t c;
+    r.v[0] = (uint64_t)t0 & VK_M51; c = (uint64_t)(t0 >> 51);
+    t1 += c; r.v[1] = (uint64_t)t1 & VK_M51; c = (uint64_t)(t1 >> 51);
+    t2 += c; r.v[2] = (uint64_t)t2 & VK_M51; c = (uint64_t)(t2 >> 51);
+    t3 += c; r.v[3] = (uint64_t)t3 & VK_M51; c = (uint64_t)(t3 >> 51);
+    t4 += c; r.v[4] = (uint64_t)t4 & VK_M51; c = (uint64_t)(t4 >> 51);
+    r.v[0] += c * 19; c = r.v[0] >> 51; r.v[0] &= VK_M51;
+    r.v[1] += c;
+    return r;
+}
 
 VK_HD fe fe_sqn(fe f, int n) {
     for (int i = 0; i < n; i++) f = fe_sq(f);

@@ -5,16 +5,23 @@
 #   ./scripts/vast_watch.sh                # watch only
 #   AUTO_DESTROY=1 ./scripts/vast_watch.sh # destroy all instances on find
 set -euo pipefail
+cd "$(dirname "$0")/.."
 
 INTERVAL=${INTERVAL:-60}
 AUTO_DESTROY=${AUTO_DESTROY:-0}
+# Only the instances this hunt created (recorded by vast_launch.sh). Monitoring
+# and destruction are restricted to this list so unrelated account instances are
+# never touched.
+FLEET_FILE=${FLEET_FILE:-.vast_fleet}
+
+if [ ! -f "$FLEET_FILE" ]; then
+    echo "no fleet file ($FLEET_FILE); run vast_launch.sh first, or set FLEET_FILE" >&2
+    echo "refusing to operate on the whole account" >&2
+    exit 1
+fi
 
 ids() {
-    vastai show instances --raw | python3 -c "
-import json, sys
-for i in json.load(sys.stdin):
-    print(i['id'])
-"
+    grep -E '^[0-9]+$' "$FLEET_FILE" | sort -u
 }
 
 while true; do

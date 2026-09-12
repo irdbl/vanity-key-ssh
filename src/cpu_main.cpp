@@ -39,29 +39,55 @@ int main(int argc, char **argv) {
     fprintf(stderr, "suffix '%s': expected attempts 2^%zu = %.3g, threads=%d\n",
             suffix, 6 * strlen(suffix), difficulty, threads);
 
+    // Process keys in batches so one field inversion amortizes over the whole
+    // batch (Montgomery's trick), matching the CUDA kernel instead of paying a
+    // full fe_invert per key.
+    constexpr int K = 16;
+
     auto t0 = std::chrono::steady_clock::now();
     std::vector<std::thread> pool;
     for (int t = 0; t < threads; t++) {
         pool.emplace_back([&, t]() {
             const uint8_t *tab = table.data();
-            uint8_t seed[32], pub[32];
-            for (uint64_t c = 0; !g_found.load(std::memory_order_relaxed); c++) {
-                if (limit && c * (uint64_t)threads >= limit) return;
-                vk_make_seed(seed, base, (uint64_t)t, c);
-                vk_seed_to_pub(tab, seed, pub);
-                g_attempts.fetch_add(1, std::memory_order_relaxed);
-                if (vk_match(pub, target, mask, first)) {
-                    if (!g_found.exchange(true)) {
-                        printf("FOUND seed=%s pub=%s\n", vk_hex(seed, 32).c_str(), vk_hex(pub, 32).c_str());
-                        printf("%s vanity\n", vk_pub_line(pub).c_str());
-                        fflush(stdout);
-                    }
-                    return;
+            ge_p3 pts[K];
+            fe prods[K];
+            uint8_t seed[32], scalar[32], pub[32];
+            uint64_t local = 0;  // flushed to g_attempts in bulk to avoid per-key contention
+            bool stop = false;
+            for (uint64_t block = 0; !stop && !g_found.load(std::memory_order_relaxed); block++) {
+                uint64_t c0 = block * (uint64_t)K;
+                if (limit && c0 * (uint64_t)threads >= limit) break;
+                for (int k = 0; k < K; k++) {
+                    vk_make_seed(seed, base, (uint64_t)t, c0 + k);
+                    vk_seed_to_scalar(seed, scalar);
+                    pts[k] = ge_scalarmult_base(tab, scalar);
+                    prods[k] = k ? fe_mul(prods[k - 1], pts[k].Z) : pts[k].Z;
                 }
+                fe u = fe_invert(prods[K - 1]);
+                for (int k = K - 1; k >= 0; k--) {
+                    fe zinv = k ? fe_mul(u, prods[k - 1]) : u;
+                    u = fe_mul(u, pts[k].Z);
+                    ge_compress_with_zinv(pub, pts[k], zinv);
+                    local++;
+                    if (vk_match(pub, target, mask, first)) {
+                        if (benchmark) continue;  // benchmarking: keep hashing, ignore matches
+                        if (!g_found.exchange(true)) {
+                            vk_make_seed(seed, base, (uint64_t)t, c0 + k);
+                            printf("FOUND seed=%s pub=%s\n", vk_hex(seed, 32).c_str(), vk_hex(pub, 32).c_str());
+                            printf("%s vanity\n", vk_pub_line(pub).c_str());
+                            fflush(stdout);
+                        }
+                        stop = true;
+                    }
+                }
+                if (local >= 1024) { g_attempts.fetch_add(local, std::memory_order_relaxed); local = 0; }
             }
+            g_attempts.fetch_add(local, std::memory_order_relaxed);
         });
     }
-    if (benchmark) {
+    // In benchmark mode ignore matches and time a fixed window of real work; with
+    // a --limit the workers bound themselves, so just join and time that.
+    if (benchmark && limit == 0) {
         std::this_thread::sleep_for(std::chrono::seconds(5));
         g_found = true;
     }
@@ -70,5 +96,5 @@ int main(int argc, char **argv) {
     uint64_t n = g_attempts.load();
     fprintf(stderr, "%llu attempts in %.1fs = %.0f keys/s\n",
             (unsigned long long)n, dt, n / dt);
-    return g_found && !benchmark ? 0 : 1;
+    return (benchmark || g_found) ? 0 : 1;
 }

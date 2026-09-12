@@ -2,6 +2,7 @@
 //
 //   gpu_vanity --suffix ++pham [--table table.bin] [--device 0]
 //              [--keys-per-thread 16] [--blocks-per-sm 8] [--threads 256]
+//              [--benchmark] [--limit N]   # measure keys/s and exit
 //
 // Prints "FOUND seed=<hex> pub=<hex>" plus the authorized_keys line and exits.
 // Convert the seed to a private key with: python3 tools/keytool.py privkey <hex>
@@ -74,6 +75,8 @@ __global__ void vanity_kernel(const uint8_t *__restrict__ table, Params p, Found
 int main(int argc, char **argv) {
     const char *suffix = nullptr, *table_path = "table.bin";
     int device = 0, threads = 256, blocks_per_sm = 8, K = 16;
+    bool benchmark = false;
+    uint64_t limit = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--suffix") && i + 1 < argc) suffix = argv[++i];
         else if (!strcmp(argv[i], "--table") && i + 1 < argc) table_path = argv[++i];
@@ -81,6 +84,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--threads") && i + 1 < argc) threads = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--blocks-per-sm") && i + 1 < argc) blocks_per_sm = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--keys-per-thread") && i + 1 < argc) K = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--benchmark")) benchmark = true;
+        else if (!strcmp(argv[i], "--limit") && i + 1 < argc) limit = strtoull(argv[++i], nullptr, 10);
         else { fprintf(stderr, "unknown arg %s\n", argv[i]); return 2; }
     }
     if (!suffix) { fprintf(stderr, "--suffix required\n"); return 2; }
@@ -118,6 +123,30 @@ int main(int argc, char **argv) {
     uint64_t total = 0, counter = 0, last_total = 0;
     auto t0 = std::chrono::steady_clock::now();
     auto last = t0;
+
+    // Benchmark mode: measure sustained throughput and exit, without needing a
+    // real hunt. Matches are ignored. Runs until --limit keys are hashed, or for
+    // ~5s if no limit is given. One warmup launch is excluded from the timing.
+    if (benchmark) {
+        vanity_kernel<<<blocks, threads>>>(d_table, p, d_found);
+        p.counter_base = (counter += K);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        auto bstart = std::chrono::steady_clock::now();
+        uint64_t bkeys = 0;
+        while (true) {
+            vanity_kernel<<<blocks, threads>>>(d_table, p, d_found);
+            p.counter_base = (counter += K);
+            CUDA_CHECK(cudaDeviceSynchronize());
+            bkeys += keys_per_launch;
+            double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - bstart).count();
+            if ((limit && bkeys >= limit) || (!limit && el >= 5.0)) {
+                printf("[gpu %d] benchmark: %.3g keys in %.2fs = %.2f Mkeys/s\n",
+                       device, (double)bkeys, el, bkeys / el / 1e6);
+                fflush(stdout);
+                return 0;
+            }
+        }
+    }
 
     while (true) {
         vanity_kernel<<<blocks, threads>>>(d_table, p, d_found);
