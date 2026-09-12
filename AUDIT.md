@@ -102,6 +102,16 @@ with a 2^16 bitmap on the low 16 bits.
 Same mechanism gives two more multipliers for free: hunt several distinct words
 at once, and F20.
 
+**Outcome — IMPLEMENTED, measured 2026-09-12 (RTX 4090).** `--ci` and
+repeatable `--suffix` compile at startup to a sorted list of w3 targets plus a
+2^16-bit shared-memory bitmap prefilter; only bitmap hits (~2^-13 of keys) pay
+for the x-parity and a binary search. Measured overhead with 1024 targets
+(10 CI letters): **0.4%** (333.4 vs 334.7 Mkeys/s). C and Python expansions
+cross-checked in tests; live GPU hunt for `--suffix kevinp --ci` produced
+`...KEvinp` and `...kEVINp` keys, verified via `keytool.py verify --ci`.
+Constraints: all suffixes same length, <= 10 chars, <= 2^20 variants.
+F20 (position relaxation) remains open.
+
 ## F3 — CPU searcher does not batch-invert
 
 `src/cpu_main.cpp:51` calls `vk_seed_to_pub`, which routes through

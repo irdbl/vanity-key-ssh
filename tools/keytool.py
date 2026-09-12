@@ -44,6 +44,39 @@ def suffix_to_target(suffix: str) -> tuple[bytes, bytes]:
     return val.to_bytes(32, "big"), mask.to_bytes(32, "big")
 
 
+def expand_ci(suffix: str) -> list[str]:
+    """All case variants of the letters in `suffix` (multi-target F2)."""
+    variants = [""]
+    for ch in suffix:
+        if ch.isalpha():
+            variants = [v + c for v in variants for c in (ch.upper(), ch.lower())]
+        else:
+            variants = [v + ch for v in variants]
+    return variants
+
+
+def targets_w3(suffixes: list[str], ci: bool) -> tuple[int, list[int]]:
+    """Compile suffixes to (mask_w3, sorted unique w3 targets).
+
+    w3 = little-endian u64 of public-key bytes 24..31 — the word the GPU
+    matcher tests. Requires len(suffix) <= 10 (60 bits) and equal lengths.
+    """
+    if len({len(s) for s in suffixes}) != 1:
+        raise ValueError("all suffixes must have the same length")
+    if len(suffixes[0]) > 10:
+        raise ValueError("multi-target matching supports suffixes up to 10 chars")
+    variants = []
+    for s in suffixes:
+        variants += expand_ci(s) if ci else [s]
+    out = set()
+    mask_w3 = None
+    for v in variants:
+        t, m = suffix_to_target(v)
+        mask_w3 = int.from_bytes(m[24:32], "little")
+        out.add(int.from_bytes(t[24:32], "little"))
+    return mask_w3, sorted(out)
+
+
 def pub_blob(pub: bytes) -> bytes:
     return HEADER + pub
 
@@ -98,6 +131,16 @@ def main() -> int:
         print(mask.hex())
         return 0
 
+    if cmd == "expand":
+        # expand SUFFIX... [--ci] -> mask_w3 hex, then sorted w3 targets (hex)
+        ci = "--ci" in sys.argv
+        sufs = [a for a in sys.argv[2:] if a != "--ci"]
+        mask_w3, targets = targets_w3(sufs, ci)
+        print(f"{mask_w3:016x}")
+        for t in targets:
+            print(f"{t:016x}")
+        return 0
+
     seed = bytes.fromhex(sys.argv[2])
     if len(seed) != 32:
         print("seed must be 32 bytes of hex", file=sys.stderr)
@@ -110,15 +153,17 @@ def main() -> int:
 
     if cmd == "verify":
         suffix = sys.argv[3]
+        ci = "--ci" in sys.argv
         pub = seed_to_public(seed)
-        target, mask = suffix_to_target(suffix)
-        ok = all((p & m) == t for p, m, t in zip(pub, mask, target))
         line = pub_line(pub, "vanity")
         print(line)
-        if not ok or not line.split()[1].endswith(suffix):
-            print(f"MISMATCH: key does not end with '{suffix}'", file=sys.stderr)
+        b64 = line.split()[1]
+        tail = b64[-len(suffix):]
+        ok = tail.lower() == suffix.lower() if ci else tail == suffix
+        if not ok:
+            print(f"MISMATCH: key does not end with '{suffix}'{' (ci)' if ci else ''}", file=sys.stderr)
             return 1
-        print(f"OK: ends with '{suffix}'")
+        print(f"OK: ends with '{tail}'" + (f" (matches '{suffix}' case-insensitively)" if ci else ""))
         return 0
 
     if cmd == "privkey":

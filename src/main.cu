@@ -44,16 +44,42 @@ struct Params {
     uint64_t mask_w3;      // mask bytes 24..31 as an LE word, sign bit cleared
     int use_w3;            // suffix fits in w3 (L <= 10): fast one-word compare
     int wide;              // 16-bit signed comb table (AUDIT3 G1)
+    // multi-target matcher (AUDIT F2)
+    int n_targets;         // >1 enables the bitmap + binary-search path
+    uint64_t mask_w3full;  // like mask_w3 but with the x-sign bit kept
 };
 
 // K is a template parameter so the batch arrays are sized exactly (a runtime
 // K forced MAX_K-sized frames: 6656 B/thread of local memory, ~1.3 GB reserved
 // across a 4090 at full residency) and the loops can fully unroll. T is dead
 // after scalarmult, so only X/Y/Z are kept per key (AUDIT2 F5/A1).
+__device__ __forceinline__ void record_found(Found *out, volatile int *found_flag,
+                                             const Params &p, uint64_t gtid, uint64_t counter,
+                                             const uint8_t pub[32]) {
+    int slot = atomicAdd(&out->count, 1);
+    if (slot < MAX_FOUND) {
+        vk_make_seed(out->seed[slot], p.base, gtid, counter);
+        memcpy(out->pub[slot], pub, 32);
+    }
+    __threadfence_system();
+    *found_flag = 1;  // mapped host memory: host polls without draining the GPU
+}
+
 template <int K>
 __global__ void vanity_kernel(const uint8_t *__restrict__ table, Params p, Found *out,
-                              volatile int *found_flag) {
+                              volatile int *found_flag,
+                              const uint64_t *__restrict__ targets,
+                              const uint32_t *__restrict__ bitmap) {
     const uint64_t gtid = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+
+    // Multi-target prefilter (AUDIT F2): 2^16-bit bitmap over the targets'
+    // low 16 bits, staged in shared memory. One shared load per key; only
+    // bitmap hits (~2^-13 of keys) pay for x-parity + binary search.
+    __shared__ uint32_t bm[2048];
+    if (p.n_targets > 1) {
+        for (int i = threadIdx.x; i < 2048; i += blockDim.x) bm[i] = bitmap[i];
+        __syncthreads();
+    }
 
     fe Xs[K], Ys[K], Zs[K], prods[K];
 
@@ -74,6 +100,31 @@ __global__ void vanity_kernel(const uint8_t *__restrict__ table, Params p, Found
         u = fe_mul(u, Zs[k]);
         ge_p3 pt{Xs[k], Ys[k], Zs[k], fe_zero()};  // T unused by compression
 
+        if (p.n_targets > 1) {
+            const uint64_t w3y = ge_compress_y_w3(pt, zinv);
+            const uint32_t lo = (uint32_t)(w3y & p.mask_w3) & 0xffff;
+            if (bm[lo >> 5] & (1u << (lo & 31))) {
+                // rare: full compression gives the sign bit; then exact search
+                uint8_t pub[32];
+                ge_compress_with_zinv(pub, pt, zinv);
+                uint64_t w3full = 0;
+                for (int j = 0; j < 8; j++) w3full |= (uint64_t)pub[24 + j] << (8 * j);
+                w3full &= p.mask_w3full;
+                int lo_i = 0, hi_i = p.n_targets - 1;
+                while (lo_i <= hi_i) {
+                    const int mid = (lo_i + hi_i) >> 1;
+                    const uint64_t t = __ldg(&targets[mid]);
+                    if (t == w3full) {
+                        record_found(out, found_flag, p, gtid, p.counter_base + k, pub);
+                        break;
+                    }
+                    if (t < w3full) lo_i = mid + 1;
+                    else hi_i = mid - 1;
+                }
+            }
+            continue;
+        }
+
         bool candidate;
         if (p.use_w3) {
             // Fast path: test every constrained bit except the x sign against
@@ -86,15 +137,8 @@ __global__ void vanity_kernel(const uint8_t *__restrict__ table, Params p, Found
         if (candidate) {
             uint8_t pub[32];
             ge_compress_with_zinv(pub, pt, zinv);
-            if (vk_match(pub, p.target, p.mask, p.first_byte)) {
-                int slot = atomicAdd(&out->count, 1);
-                if (slot < MAX_FOUND) {
-                    vk_make_seed(out->seed[slot], p.base, gtid, p.counter_base + k);
-                    memcpy(out->pub[slot], pub, 32);
-                }
-                __threadfence_system();
-                *found_flag = 1;  // mapped host memory: host polls without draining the GPU
-            }
+            if (vk_match(pub, p.target, p.mask, p.first_byte))
+                record_found(out, found_flag, p, gtid, p.counter_base + k, pub);
         }
     }
 }
@@ -111,22 +155,25 @@ __global__ void selftest_kernel(const uint8_t *__restrict__ table, Params p, uin
 }
 
 static void launch_vanity(int K, int blocks, int threads, const uint8_t *table, const Params &p,
-                          Found *out, volatile int *flag) {
+                          Found *out, volatile int *flag, const uint64_t *targets, const uint32_t *bitmap) {
     switch (K) {
-        case 4: vanity_kernel<4><<<blocks, threads>>>(table, p, out, flag); break;
-        case 8: vanity_kernel<8><<<blocks, threads>>>(table, p, out, flag); break;
-        case 16: vanity_kernel<16><<<blocks, threads>>>(table, p, out, flag); break;
-        case 32: vanity_kernel<32><<<blocks, threads>>>(table, p, out, flag); break;
+        case 4: vanity_kernel<4><<<blocks, threads>>>(table, p, out, flag, targets, bitmap); break;
+        case 8: vanity_kernel<8><<<blocks, threads>>>(table, p, out, flag, targets, bitmap); break;
+        case 16: vanity_kernel<16><<<blocks, threads>>>(table, p, out, flag, targets, bitmap); break;
+        case 32: vanity_kernel<32><<<blocks, threads>>>(table, p, out, flag, targets, bitmap); break;
     }
 }
 
 int main(int argc, char **argv) {
-    const char *suffix = nullptr, *table_path = "table.bin";
+    const char *table_path = "table.bin";
+    std::vector<std::string> suffixes;
+    bool ci = false;
     int device = 0, threads = 256, blocks_per_sm = 8, K = 32;  // K=32 measured best (206 vs 202 Mkeys/s at K=16)
     bool benchmark = false, selftest = false;
     uint64_t limit = 0;
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--suffix") && i + 1 < argc) suffix = argv[++i];
+        if (!strcmp(argv[i], "--suffix") && i + 1 < argc) suffixes.push_back(argv[++i]);
+        else if (!strcmp(argv[i], "--ci")) ci = true;
         else if (!strcmp(argv[i], "--table") && i + 1 < argc) table_path = argv[++i];
         else if (!strcmp(argv[i], "--device") && i + 1 < argc) device = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--threads") && i + 1 < argc) threads = atoi(argv[++i]);
@@ -137,7 +184,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--limit") && i + 1 < argc) limit = strtoull(argv[++i], nullptr, 10);
         else { fprintf(stderr, "unknown arg %s\n", argv[i]); return 2; }
     }
-    if (!suffix) { fprintf(stderr, "--suffix required\n"); return 2; }
+    if (suffixes.empty()) { fprintf(stderr, "--suffix required\n"); return 2; }
+    const char *suffix = suffixes[0].c_str();
     if (K != 4 && K != 8 && K != 16 && K != 32) { fprintf(stderr, "--keys-per-thread must be 4, 8, 16 or 32\n"); return 2; }
 
     Params p = {};
@@ -159,6 +207,12 @@ int main(int argc, char **argv) {
     p.mask_w3 = mw & ~(1ULL << 63);
     p.use_w3 = (p.first_byte >= 24);
 
+    // multi-target compilation (AUDIT F2): several --suffix and/or --ci
+    vk_targets tg;
+    if (vk_compile_targets(suffixes, ci, tg) < 0) return 2;
+    p.n_targets = (int)tg.vals.size();
+    p.mask_w3full = tg.mask_w3full;
+
     auto table = vk_load_table(table_path, &p.wide);
 
     CUDA_CHECK(cudaSetDevice(device));
@@ -172,6 +226,16 @@ int main(int argc, char **argv) {
     CUDA_CHECK(cudaMalloc(&d_found, sizeof(Found)));
     CUDA_CHECK(cudaMemset(d_found, 0, sizeof(Found)));
 
+    uint64_t *d_targets = nullptr;
+    uint32_t *d_bitmap = nullptr;
+    if (p.n_targets > 1) {
+        CUDA_CHECK(cudaMalloc(&d_targets, tg.vals.size() * sizeof(uint64_t)));
+        CUDA_CHECK(cudaMemcpy(d_targets, tg.vals.data(), tg.vals.size() * sizeof(uint64_t),
+                              cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMalloc(&d_bitmap, sizeof(tg.bitmap)));
+        CUDA_CHECK(cudaMemcpy(d_bitmap, tg.bitmap, sizeof(tg.bitmap), cudaMemcpyHostToDevice));
+    }
+
     // Mapped host flag (AUDIT2 F13): the hunt loop polls this instead of a
     // synchronous per-launch cudaMemcpy, so a few launches stay queued and the
     // GPU never drains between kernels.
@@ -183,12 +247,12 @@ int main(int argc, char **argv) {
 
     const int blocks = props.multiProcessorCount * blocks_per_sm;
     const uint64_t keys_per_launch = (uint64_t)blocks * threads * K;
-    const double difficulty = pow(2.0, 6.0 * strlen(suffix));
+    const double difficulty = pow(2.0, 6.0 * strlen(suffix)) / (p.n_targets > 0 ? p.n_targets : 1);
     fprintf(stderr,
-            "[gpu %d] %s (%d SMs): suffix '%s', difficulty 2^%zu = %.3g, "
+            "[gpu %d] %s (%d SMs): suffix '%s'%s, %d target(s), difficulty %.3g, "
             "%d blocks x %d threads x %d keys = %.2fM keys/launch\n",
-            device, props.name, props.multiProcessorCount, suffix, 6 * strlen(suffix),
-            difficulty, blocks, threads, K, keys_per_launch / 1e6);
+            device, props.name, props.multiProcessorCount, suffix, ci ? " (ci)" : "",
+            p.n_targets, difficulty, blocks, threads, K, keys_per_launch / 1e6);
 
     Found h_found = {};
     uint64_t total = 0, counter = 0, last_total = 0;
@@ -219,13 +283,13 @@ int main(int argc, char **argv) {
     // real hunt. Matches are ignored. Runs until --limit keys are hashed, or for
     // ~5s if no limit is given. One warmup launch is excluded from the timing.
     if (benchmark) {
-        launch_vanity(K, blocks, threads, d_table, p, d_found, d_flag);
+        launch_vanity(K, blocks, threads, d_table, p, d_found, d_flag, d_targets, d_bitmap);
         p.counter_base = (counter += K);
         CUDA_CHECK(cudaDeviceSynchronize());
         auto bstart = std::chrono::steady_clock::now();
         uint64_t bkeys = 0;
         while (true) {
-            launch_vanity(K, blocks, threads, d_table, p, d_found, d_flag);
+            launch_vanity(K, blocks, threads, d_table, p, d_found, d_flag, d_targets, d_bitmap);
             p.counter_base = (counter += K);
             CUDA_CHECK(cudaDeviceSynchronize());
             bkeys += keys_per_launch;
@@ -247,7 +311,7 @@ int main(int argc, char **argv) {
     uint64_t launched = 0;
 
     while (true) {
-        launch_vanity(K, blocks, threads, d_table, p, d_found, d_flag);
+        launch_vanity(K, blocks, threads, d_table, p, d_found, d_flag, d_targets, d_bitmap);
         CUDA_CHECK(cudaEventRecord(ev[launched % DEPTH]));
         p.counter_base = (counter += K);
         launched++;

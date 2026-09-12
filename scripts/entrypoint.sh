@@ -8,6 +8,7 @@ set -u
 cd "$(dirname "$0")/.."
 SUFFIX=${SUFFIX:?set SUFFIX, e.g. SUFFIX=++pham}
 TABLE=${TABLE:-table.bin}
+CI=${CI:-}   # CI=1: case-insensitive letter matching (multi-target F2)
 OUT=out
 mkdir -p "$OUT"
 
@@ -18,7 +19,7 @@ for i in $(seq 0 $((NGPU - 1))); do
     # Process substitution (not a pipe) so $! is the miner's PID, not tee's:
     # killing tee would leave the GPU searcher running until a later pipe write.
     # stdbuf execs gpu_vanity, so the recorded PID is the miner itself.
-    stdbuf -oL ./bin/gpu_vanity --suffix "$SUFFIX" --table "$TABLE" --device "$i" \
+    stdbuf -oL ./bin/gpu_vanity --suffix "$SUFFIX" ${CI:+--ci} --table "$TABLE" --device "$i" \
         > >(stdbuf -oL tee "$OUT/gpu_$i.log") 2>&1 &
     pids+=($!)
 done

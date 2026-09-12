@@ -9,6 +9,7 @@
 #   GPU         gpu_name filter                       [RTX_4090]
 #   MAX_DPH     max $/hr per GPU                      [0.50]
 #   REPO        public git URL instances clone        [git remote origin]
+#   CI          set to 1 for case-insensitive letter matching
 #   NTFY_TOPIC  optional ntfy.sh topic for a content-free "found" ping
 #   BID         set to 1 for interruptible bids        [off]
 #               (memoryless search loses only the in-flight launch if outbid;
@@ -27,6 +28,7 @@ GPU=${GPU:-RTX_4090}
 MAX_DPH=${MAX_DPH:-0.50}
 REPO=${REPO:-$(git remote get-url origin)}
 NTFY_TOPIC=${NTFY_TOPIC:-}
+CI=${CI:-}   # CI=1: case-insensitive hunt (see README)
 IMAGE=${IMAGE:-nvidia/cuda:12.4.1-devel-ubuntu22.04}
 BID=${BID:-}
 # Instances created by this hunt are recorded here so vast_watch.sh destroys
@@ -37,7 +39,7 @@ FLEET_FILE=${FLEET_FILE:-.vast_fleet}
 ONSTART="apt-get update && apt-get install -y --no-install-recommends git python3 curl ca-certificates && \
 git clone --depth 1 '$REPO' /app && cd /app && \
 python3 tools/gen_table.py table16.bin --wide && make gpu GPU_ARCH='-arch=native' && \
-SUFFIX='$SUFFIX' NTFY_TOPIC='$NTFY_TOPIC' TABLE=table16.bin bash scripts/entrypoint.sh"
+SUFFIX='$SUFFIX' CI='$CI' NTFY_TOPIC='$NTFY_TOPIC' TABLE=table16.bin bash scripts/entrypoint.sh"
 
 echo "searching offers (COUNT=$COUNT GPUs total, <\$$MAX_DPH/hr per GPU)..."
 # Notes from live testing + AUDIT2 F19:

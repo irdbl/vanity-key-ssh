@@ -53,6 +53,20 @@ int main(int argc, char **argv) {
         }
         return 0;
     }
+    if (!strcmp(argv[1], "expand")) {
+        // expand SUFFIX... [ci] -> mask_w3full hex, then sorted w3 targets
+        bool ci = false;
+        std::vector<std::string> sufs;
+        for (int i = 2; i < argc; i++) {
+            if (!strcmp(argv[i], "ci")) ci = true;
+            else sufs.push_back(argv[i]);
+        }
+        vk_targets tg;
+        if (vk_compile_targets(sufs, ci, tg) < 0) return 1;
+        printf("%016llx\n", (unsigned long long)tg.mask_w3full);
+        for (uint64_t v : tg.vals) printf("%016llx\n", (unsigned long long)v);
+        return 0;
+    }
     if (!strcmp(argv[1], "target")) {
         uint8_t target[32], mask[32];
         int first = vk_suffix_to_target(argv[2], target, mask);

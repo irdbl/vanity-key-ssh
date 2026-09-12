@@ -41,9 +41,17 @@ you need 3× the mean for 95% confidence. **Realistic ceiling: 8 characters.**
 Notes:
 - Any base64 chars work (`A-Za-z0-9+/`); all suffixes of equal length are
   equally hard.
-- Matching is currently case-sensitive/exact. Case-insensitive matching
-  (accept `PHAM`/`pham`/...) would cut difficulty ~1 bit per letter but
-  needs multi-target compare in the kernel (straightforward extension).
+- **Case-insensitive and multi-word hunts** (`--ci`, repeatable `--suffix`)
+  divide difficulty by the number of accepted variants at ~0.4% measured
+  overhead: each letter is worth 1 bit back. Ten case-insensitive letters
+  cost 2^50 instead of 2^60 — that is what makes a 10-char suffix real:
+
+  | Hunt | Effective difficulty | 30x 4090 fleet (mean) | Expected $ |
+  |---|---|---|---|
+  | 9 CI letters | 2^45 | ~1 h | ~$10 |
+  | **10 CI letters** | **2^50** | **~31 h** | **~$330 on-demand, ~$215 with BID=1** |
+
+  (334M keys/s per 4090; suffixes up to 10 chars, same length, <= 2^20 variants.)
 - **No incremental-addition trick.** `mkp224o` (Tor v3 onion vanity) skips
   the per-candidate scalar mult by walking `A += 8B` and keeping the raw
   scalar — ~15-25× faster. It is deliberately *not* used here: an OpenSSH
@@ -67,7 +75,8 @@ make test                              # cross-checks vs RFC 8032 + ssh-keygen
 
 # GPU hunt (needs nvcc; on the CUDA box):
 make gpu
-./bin/gpu_vanity --suffix ++pham
+./bin/gpu_vanity --suffix ++pham --table table16.bin
+./bin/gpu_vanity --suffix KevinPham1 --ci --table table16.bin   # any capitalization
 ./bin/gpu_vanity --suffix ++pham --benchmark   # measure keys/s and exit
 ```
 

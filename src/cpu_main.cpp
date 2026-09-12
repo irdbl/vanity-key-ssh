@@ -14,31 +14,38 @@ static std::atomic<uint64_t> g_attempts{0};
 static std::atomic<bool> g_found{false};
 
 int main(int argc, char **argv) {
-    const char *suffix = nullptr, *table_path = "table.bin";
+    const char *table_path = "table.bin";
+    std::vector<std::string> suffixes;
+    bool ci = false;
     int threads = (int)std::thread::hardware_concurrency();
     uint64_t limit = 0;
     bool benchmark = false;
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--suffix") && i + 1 < argc) suffix = argv[++i];
+        if (!strcmp(argv[i], "--suffix") && i + 1 < argc) suffixes.push_back(argv[++i]);
+        else if (!strcmp(argv[i], "--ci")) ci = true;
         else if (!strcmp(argv[i], "--table") && i + 1 < argc) table_path = argv[++i];
         else if (!strcmp(argv[i], "--threads") && i + 1 < argc) threads = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--limit") && i + 1 < argc) limit = strtoull(argv[++i], nullptr, 10);
         else if (!strcmp(argv[i], "--benchmark")) benchmark = true;
         else { fprintf(stderr, "unknown arg %s\n", argv[i]); return 2; }
     }
-    if (!suffix) { fprintf(stderr, "--suffix required\n"); return 2; }
+    if (suffixes.empty()) { fprintf(stderr, "--suffix required\n"); return 2; }
+    const char *suffix = suffixes[0].c_str();
 
     uint8_t target[32], mask[32];
     int first = vk_suffix_to_target(suffix, target, mask);
     if (first < 0) { fprintf(stderr, "bad suffix '%s'\n", suffix); return 2; }
+    vk_targets tg;
+    if (vk_compile_targets(suffixes, ci, tg) < 0) return 2;
+    const bool multi = tg.vals.size() > 1;
     int wide = 0;
     auto table = vk_load_table(table_path, &wide);
 
     uint8_t base[16];
     vk_random_base(base);
-    double difficulty = pow(2.0, 6.0 * strlen(suffix));
-    fprintf(stderr, "suffix '%s': expected attempts 2^%zu = %.3g, threads=%d\n",
-            suffix, 6 * strlen(suffix), difficulty, threads);
+    double difficulty = pow(2.0, 6.0 * strlen(suffix)) / (double)tg.vals.size();
+    fprintf(stderr, "suffix '%s'%s: %zu target(s), expected attempts %.3g, threads=%d\n",
+            suffix, ci ? " (ci)" : "", tg.vals.size(), difficulty, threads);
 
     // Process keys in batches so one field inversion amortizes over the whole
     // batch (Montgomery's trick), matching the CUDA kernel instead of paying a
@@ -71,7 +78,16 @@ int main(int argc, char **argv) {
                     u = fe_mul(u, pts[k].Z);
                     ge_compress_with_zinv(pub, pts[k], zinv);
                     local++;
-                    if (vk_match(pub, target, mask, first)) {
+                    bool hit;
+                    if (multi) {
+                        uint64_t w3full = 0;
+                        for (int j = 0; j < 8; j++) w3full |= (uint64_t)pub[24 + j] << (8 * j);
+                        w3full &= tg.mask_w3full;
+                        hit = std::binary_search(tg.vals.begin(), tg.vals.end(), w3full);
+                    } else {
+                        hit = vk_match(pub, target, mask, first);
+                    }
+                    if (hit) {
                         if (benchmark) continue;  // benchmarking: keep hashing, ignore matches
                         if (!g_found.exchange(true)) {
                             vk_make_seed(seed, base, (uint64_t)t, c0 + k);

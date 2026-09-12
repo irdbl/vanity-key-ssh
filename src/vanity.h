@@ -1,5 +1,6 @@
 // Host-only helpers shared by the CPU searcher, CUDA host code, and tests.
 #pragma once
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,6 +40,90 @@ static int vk_suffix_to_target(const char *suffix, uint8_t target[32], uint8_t m
     for (int j = 0; j < 32; j++)
         if (mask[j]) return j;
     return -1;
+}
+
+// --- Multi-target matcher compilation (AUDIT F2) -------------------------
+//
+// A hunt can accept many suffixes at once (several words, and/or every case
+// variant of each letter). At startup they are compiled to:
+//   - one shared mask over w3 (pubkey bytes 24..31 as an LE u64; a suffix of
+//     L <= 10 chars constrains only bits inside w3),
+//   - a sorted, deduped list of w3 target values (sign bit included),
+//   - an 8 KB bitmap over the low 16 bits of the targets.
+// The kernel tests bitmap[low16(w3y & mask)] per key (~free) and only bitmap
+// hits (~2^-13 of keys) pay for the x-parity and a binary search.
+
+#include <algorithm>
+
+struct vk_targets {
+    uint64_t mask_w3full = 0;         // includes the x-sign bit when constrained
+    std::vector<uint64_t> vals;       // sorted unique w3 values, pre-masked
+    uint32_t bitmap[2048] = {};       // 2^16 bits over vals' low 16 bits
+    size_t suffix_len = 0;
+};
+
+static void vk_expand_ci(const std::string &suffix, std::vector<std::string> &out) {
+    std::vector<std::string> acc{""};
+    for (char ch : suffix) {
+        std::vector<std::string> next;
+        next.reserve(acc.size() * 2);
+        const bool alpha = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
+        for (const auto &v : acc) {
+            if (alpha) {
+                next.push_back(v + (char)toupper(ch));
+                next.push_back(v + (char)tolower(ch));
+            } else {
+                next.push_back(v + ch);
+            }
+        }
+        acc.swap(next);
+    }
+    out.insert(out.end(), acc.begin(), acc.end());
+}
+
+// Returns 0 on success; prints the reason and returns -1 on invalid input.
+static int vk_compile_targets(const std::vector<std::string> &suffixes, bool ci, vk_targets &tg) {
+    if (suffixes.empty()) return -1;
+    tg.suffix_len = suffixes[0].size();
+    for (const auto &s : suffixes)
+        if (s.size() != tg.suffix_len) {
+            fprintf(stderr, "all suffixes must have the same length ('%s')\n", s.c_str());
+            return -1;
+        }
+    if (tg.suffix_len > 10) {
+        fprintf(stderr, "multi-target matching supports suffixes up to 10 chars (60 bits)\n");
+        return -1;
+    }
+    std::vector<std::string> variants;
+    for (const auto &s : suffixes) {
+        if (ci) vk_expand_ci(s, variants);
+        else variants.push_back(s);
+        if (variants.size() > (1u << 20)) {
+            fprintf(stderr, "too many target variants (max 2^20)\n");
+            return -1;
+        }
+    }
+    for (const auto &v : variants) {
+        uint8_t t[32], m[32];
+        if (vk_suffix_to_target(v.c_str(), t, m) < 0) {
+            fprintf(stderr, "bad suffix '%s'\n", v.c_str());
+            return -1;
+        }
+        uint64_t tw = 0, mw = 0;
+        for (int j = 0; j < 8; j++) {
+            tw |= (uint64_t)t[24 + j] << (8 * j);
+            mw |= (uint64_t)m[24 + j] << (8 * j);
+        }
+        tg.mask_w3full = mw;
+        tg.vals.push_back(tw & mw);
+    }
+    std::sort(tg.vals.begin(), tg.vals.end());
+    tg.vals.erase(std::unique(tg.vals.begin(), tg.vals.end()), tg.vals.end());
+    for (uint64_t v : tg.vals) {
+        uint32_t lo = (uint32_t)(v & 0xffff);
+        tg.bitmap[lo >> 5] |= 1u << (lo & 31);
+    }
+    return 0;
 }
 
 // Loads either table format; file size discriminates. *wide is set to 1 for

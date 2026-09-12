@@ -100,6 +100,31 @@ def test_target_mask_semantics():
         assert all((p & mm) == tt for p, mm, tt in zip(pub, m, t))
 
 
+def test_multi_target_expansion_c_matches_python():
+    cases = [(["pham"], True), (["Qq"], True), (["kevin9"], True),
+             (["++pham"], False), (["pham", "kevn"], True)]
+    for sufs, ci in cases:
+        c = run(TEST_HOST, "expand", *sufs, *(["ci"] if ci else []))
+        p = run(sys.executable, os.path.join(ROOT, "tools", "keytool.py"),
+                "expand", *sufs, *(["--ci"] if ci else []))
+        assert c == p, f"expansion mismatch for {sufs} ci={ci}"
+        nletters = sum(ch.isalpha() for s in sufs for ch in s)
+        if ci and len(sufs) == 1:
+            assert len(c.strip().splitlines()) - 1 == 2 ** nletters
+
+
+def test_ci_hunt_cpu():
+    # 2 CI letters: 4 targets, expected 1024 attempts
+    out = run(CPU_VANITY, "--suffix", "qq", "--ci", "--table", TABLE, "--threads", "4")
+    found = [l for l in out.splitlines() if l.startswith("FOUND")][0]
+    seed = found.split("seed=")[1].split()[0]
+    line = keytool.pub_line(keytool.seed_to_public(bytes.fromhex(seed)), "x").split()[1]
+    assert line[-2:].lower() == "qq"
+    check = run(sys.executable, os.path.join(ROOT, "tools", "keytool.py"),
+                "verify", seed, "qq", "--ci")
+    assert "OK" in check
+
+
 def test_end_to_end_cpu_hunt(tmp_path):
     # 2-char suffix: expected 4096 attempts; verify the found key with OpenSSH
     suffix = "Qq"
