@@ -137,8 +137,8 @@
   .chip .mode { font-family: "IBM Plex Mono", monospace; font-size: 10px; letter-spacing: .04em; }
   .chip[data-mode="exact"] { border-color: var(--border-strong); }
   .chip[data-mode="exact"] .mode { color: var(--faint); }
-  .chip[data-mode="case"] { border-color: var(--cyan); background: var(--cyan-fill); }
-  .chip[data-mode="case"] .mode { color: var(--cyan); }
+  .chip[data-mode="case"], .chip[data-mode="pair"] { border-color: var(--cyan); background: var(--cyan-fill); }
+  .chip[data-mode="case"] .mode, .chip[data-mode="pair"] .mode { color: var(--cyan); }
   .chip[data-mode="any"] { border-color: var(--warn); }
   .chip[data-mode="any"] .glyph { color: var(--warn); }
   .chip[data-mode="any"] .mode { color: var(--warn); }
@@ -245,7 +245,7 @@
 
       <div class="legend">
         <span><i style="background:var(--border-strong)"></i> exact</span>
-        <span><i style="background:var(--cyan-fill);border:1px solid var(--cyan)"></i> either case <code style="font-size:11px">[Aa]</code></span>
+        <span><i style="background:var(--cyan-fill);border:1px solid var(--cyan)"></i> either case <code style="font-size:11px">[Aa]</code>, or <code style="font-size:11px">[+/]</code></span>
         <span><i style="background:var(--warn)"></i> any character <code style="font-size:11px">.</code></span>
       </div>
 
@@ -336,6 +336,7 @@
   const PREFIX = "AAAAC3NzaC1lZDI1NTE5AAAAI"; // 25 fixed chars of every ed25519 pubkey blob
   const TOTAL = 68;
   const isLetter = c => /[A-Za-z]/.test(c);
+  const isSlashPair = c => c === "+" || c === "/";   // interchangeable base64 specials
   const isB64 = c => B64.includes(c);
   const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -352,6 +353,7 @@
       const c = s[i];
       if (prev === "any") next[i] = "any";
       else if (prev === "case" && isLetter(c)) next[i] = "case";
+      else if (prev === "pair" && isSlashPair(c)) next[i] = "pair";
       else next[i] = "exact";
     }
     modes = next;
@@ -362,6 +364,7 @@
     if (!isB64(c)) return 1;
     if (modes[i] === "any") return 64;
     if (modes[i] === "case" && isLetter(c)) return 2;
+    if (modes[i] === "pair" && isSlashPair(c)) return 2;   // {+, /}
     return 1;
   }
 
@@ -370,6 +373,8 @@
     if (!isB64(c)) return;
     if (isLetter(c)) {
       modes[i] = modes[i] === "exact" ? "case" : modes[i] === "case" ? "any" : "exact";
+    } else if (isSlashPair(c)) {
+      modes[i] = modes[i] === "exact" ? "pair" : modes[i] === "pair" ? "any" : "exact";
     } else {
       modes[i] = modes[i] === "exact" ? "any" : "exact";
     }
@@ -388,7 +393,7 @@
       btn.className = "chip" + (valid ? "" : " locked");
       btn.dataset.mode = m;
       btn.type = "button";
-      const modeLabel = !valid ? "bad" : m === "case" ? "Aa" : m === "any" ? "any" : "fix";
+      const modeLabel = !valid ? "bad" : m === "case" ? "Aa" : m === "pair" ? "+/" : m === "any" ? "any" : "fix";
       btn.innerHTML = `<span class="glyph">${c === " " ? "␣" : escapeHtml(c)}</span><span class="mode">${modeLabel}</span>`;
       if (valid) {
         btn.setAttribute("aria-label", `Character ${i + 1}: ${c}, mode ${m}. Click to change.`);
@@ -411,6 +416,7 @@
       if (!isB64(c)) { out += `<span style="color:var(--crit)">${escapeHtml(c)}</span>`; continue; }
       if (modes[i] === "any") out += `<span class="fx">.</span>`;
       else if (modes[i] === "case") out += `<span class="fx">[${c.toUpperCase()}${c.toLowerCase()}]</span>`;
+      else if (modes[i] === "pair") out += `<span class="fx">[+\\/]</span>`;
       else out += escapeHtml(escapeRegex(c));
     }
     return "/" + out + "$/";
@@ -426,6 +432,7 @@
       if (!isB64(c)) opts = [c];
       else if (modes[i] === "any") opts = B64.split("");
       else if (modes[i] === "case" && isLetter(c)) opts = [c.toUpperCase(), c.toLowerCase()];
+      else if (modes[i] === "pair" && isSlashPair(c)) opts = ["+", "/"];
       else opts = [c];
       const next = [];
       for (const a of acc) for (const o of opts) { next.push(a + o); if (next.length > cap) return null; }
@@ -518,12 +525,12 @@
     const letterModes = [...s].map((c,i)=> isLetter(c) ? modes[i] : null).filter(m=>m!==null);
     const allLettersCase = letterModes.length > 0 && letterModes.every(m => m === "case");
     const anyWild = modes.some(m => m === "any");
-    const anyCase = modes.some(m => m === "case");
+    const anyPair = modes.some(m => m === "pair");
 
     if (variants === 1) {
       out.innerHTML = `./bin/gpu_vanity --table table16.bin --suffix <span class="fx">'${escapeHtml(s)}'</span>`;
       hint.textContent = "Single exact target.";
-    } else if (allLettersCase && !anyWild) {
+    } else if (allLettersCase && !anyWild && !anyPair) {
       out.innerHTML = `./bin/gpu_vanity --table table16.bin --suffix <span class="fx">'${escapeHtml(s.toLowerCase())}'</span> --ci`;
       hint.textContent = "--ci makes every letter case-insensitive. For a fleet: CI=1 SUFFIX='"+s.toLowerCase()+"' ./scripts/vast_launch.sh";
     } else {
@@ -549,6 +556,7 @@
       if (!isB64(c)) { out += c; continue; }
       if (modes[i] === "any") out += B64[Math.floor(Math.random()*64)];
       else if (modes[i] === "case" && isLetter(c)) out += Math.random() < 0.5 ? c.toUpperCase() : c.toLowerCase();
+      else if (modes[i] === "pair" && isSlashPair(c)) out += Math.random() < 0.5 ? "+" : "/";
       else out += c;
     }
     return out;
