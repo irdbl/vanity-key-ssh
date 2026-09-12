@@ -1,0 +1,7 @@
+bin/
+table.bin
+out/
+__pycache__/
+*.pyc
+.venv/
+id_ed25519*
