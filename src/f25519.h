@@ -152,8 +152,9 @@ VK_HD fe fe_frombytes(const uint8_t s[32]) {
     return r;
 }
 
-// Canonical little-endian encoding (fully reduced mod p).
-VK_HD void fe_tobytes(uint8_t s[32], const fe &f) {
+// Canonical encoding as 4 little-endian u64 words (fully reduced mod p).
+// w[3] covers encoded bytes 24..31 — every suffix bit for L <= 10 (AUDIT2 F10).
+VK_HD void fe_to_u64x4(uint64_t w[4], const fe &f) {
     fe h = f;
     for (int pass = 0; pass < 2; pass++) {
         uint64_t c;
@@ -180,8 +181,13 @@ VK_HD void fe_tobytes(uint8_t s[32], const fe &f) {
     acc = (vk_u128)w3 - 0x7fffffffffffffffULL - b;
     t3 = (uint64_t)acc; b = (uint64_t)(acc >> 64) & 1;
     if (!b) { w0 = t0; w1 = t1; w2 = t2; w3 = t3; }
-    for (int i = 0; i < 8; i++) s[i] = (uint8_t)(w0 >> (8 * i));
-    for (int i = 0; i < 8; i++) s[8 + i] = (uint8_t)(w1 >> (8 * i));
-    for (int i = 0; i < 8; i++) s[16 + i] = (uint8_t)(w2 >> (8 * i));
-    for (int i = 0; i < 8; i++) s[24 + i] = (uint8_t)(w3 >> (8 * i));
+    w[0] = w0; w[1] = w1; w[2] = w2; w[3] = w3;
+}
+
+// Canonical little-endian encoding (fully reduced mod p).
+VK_HD void fe_tobytes(uint8_t s[32], const fe &f) {
+    uint64_t w[4];
+    fe_to_u64x4(w, f);
+    for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 8; j++) s[8 * i + j] = (uint8_t)(w[i] >> (8 * j));
 }

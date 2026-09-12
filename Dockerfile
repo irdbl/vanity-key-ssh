@@ -11,7 +11,7 @@ COPY src/ src/
 COPY tools/ tools/
 COPY scripts/ scripts/
 
-RUN python3 tools/gen_table.py table.bin && make gpu
+RUN python3 tools/gen_table.py table.bin && python3 tools/gen_table.py table16.bin --wide && make gpu
 
 # SUFFIX must be provided; NTFY_TOPIC optional (content-free "found" ping)
 CMD ["bash", "scripts/entrypoint.sh"]

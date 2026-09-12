@@ -20,9 +20,10 @@ Keys/sec (measured / planning estimates):
 | Hardware | keys/s |
 |---|---|
 | Apple M-series laptop, 14 threads (measured) | ~0.9M |
-| RTX 4090 (estimate — verify with the built-in rate meter) | ~100–300M |
+| RTX 4090, 16-bit signed comb (measured 2026-09) | **~334M** |
+| RTX 4090, 8-bit comb / small-L2 fallback (measured) | ~208M |
 
-Expected cost at 200M keys/s per GPU and ~$0.35/hr for a 4090 on vast.ai
+Expected cost at 334M keys/s per GPU and ~$0.35/hr for a 4090 on vast.ai
 (cost scales with total attempts, so fleet size changes wall-clock, not $):
 
 | Suffix len | Expected attempts | 1× 4090 (mean) | 10× 4090 (mean) | Expected $ |
@@ -30,8 +31,8 @@ Expected cost at 200M keys/s per GPU and ~$0.35/hr for a 4090 on vast.ai
 | 5 | 2^30 ≈ 1.1e9  | 5 s | — | ~$0.001 |
 | 6 | 2^36 ≈ 6.9e10 | 6 min | 35 s | ~$0.03 |
 | 7 | 2^42 ≈ 4.4e12 | 6 h | 37 min | ~$2 |
-| 8 | 2^48 ≈ 2.8e14 | 16 days | 1.6 days | ~$140 |
-| 9 | 2^54 ≈ 1.8e16 | 2.9 years | 3.4 months | ~$9,000 |
+| 8 | 2^48 ≈ 2.8e14 | 9.8 days | 23 h | ~$82 |
+| 9 | 2^54 ≈ 1.8e16 | 1.7 years | 2 months | ~$5,200 |
 
 The search is geometric: median = 0.69× the mean, but there's a long tail —
 you need 3× the mean for 95% confidence. **Realistic ceiling: 8 characters.**
@@ -56,7 +57,8 @@ Notes:
 ## Quickstart
 
 ```bash
-python3 tools/gen_table.py table.bin   # 768KB fixed-base table, ~1 min
+python3 tools/gen_table.py table.bin            # 768KB 8-bit table (CPU/tests)
+python3 tools/gen_table.py table16.bin --wide   # 48MB 16-bit table (GPUs), ~1 min
 make host                              # CPU searcher + test harness
 make test                              # cross-checks vs RFC 8032 + ssh-keygen
 
@@ -129,8 +131,12 @@ Optional `NTFY_TOPIC=<topic>` sends a content-free ntfy.sh ping on a find
 
 - **No base64 in the hot loop**: the suffix compiles to a byte mask over the
   raw 32-byte public key (`tools/keytool.py target`, mirrored in C).
-- **Fixed-base table**: `table[i][j] = j·2^(8i)·B` (32×256 entries, niels
-  form) turns the scalar mult into 32 mixed additions — no doublings.
+- **16-bit signed comb** (GPU): `table[i][j] = j·2^(16i)·B` magnitudes,
+  16×32769 niels entries (~48MB, L2-resident on a 4090). The clamped scalar is
+  recoded into 16 signed digits, so a key costs 16 mixed additions — no
+  doublings — with digit signs applied by branchless point negation. A 768KB
+  8-bit table (32 windows) remains for CPUs and small-L2 GPUs; the loader
+  picks by file size. Measured 334 vs 208 Mkeys/s on a 4090.
 - **Batch inversion**: each GPU thread computes 16 points, then one Montgomery
   batch inversion amortizes the ~254-squaring field inversion across all 16.
 - **5×51-bit field arithmetic** (donna-style) with `unsigned __int128`

@@ -60,6 +60,20 @@ def test_cpp_batch_inversion_matches_single():
         assert got[str(i)] == ed25519_ref.seed_to_public(s).hex()
 
 
+TABLE16 = os.path.join(ROOT, "table16.bin")
+
+
+@pytest.mark.skipif(not os.path.exists(TABLE16), reason="table16.bin not generated (make table16.bin)")
+def test_cpp_pub_wide_table_matches_python():
+    # 16-bit signed comb (AUDIT3 G1): signed-digit recoding + niels negation
+    for seed, pub in RFC8032:
+        assert run(TEST_HOST, "pub", TABLE16, seed).strip() == pub
+    for _ in range(10):
+        seed = secrets.token_bytes(32)
+        expect = ed25519_ref.seed_to_public(seed).hex()
+        assert run(TEST_HOST, "pub", TABLE16, seed.hex()).strip() == expect
+
+
 def test_cpp_sha512_matches_hashlib():
     import hashlib
     for _ in range(10):

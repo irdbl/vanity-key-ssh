@@ -37,15 +37,13 @@ VK_CONST static const uint64_t VK_SHA512_K[80] = {
 
 VK_HD uint64_t vk_rotr64(uint64_t x, int n) { return (x >> n) | (x << (64 - n)); }
 
-// digest[64] = SHA512(seed[32])
-VK_HD void sha512_32(const uint8_t seed[32], uint8_t digest[64]) {
+// Core: SHA-512 of a 32-byte message given as 4 big-endian words; writes the
+// full 8-word state. Word-in/word-out so the GPU hot path never round-trips
+// through byte arrays in local memory (AUDIT2 F11).
+VK_HD void sha512_32_core(const uint64_t m[4], uint64_t out[8]) {
     uint64_t w[16];
     // Message block: 32 bytes || 0x80 || zeros || 128-bit length (256 bits)
-    for (int i = 0; i < 4; i++) {
-        uint64_t v = 0;
-        for (int j = 0; j < 8; j++) v = (v << 8) | seed[i * 8 + j];
-        w[i] = v;
-    }
+    w[0] = m[0]; w[1] = m[1]; w[2] = m[2]; w[3] = m[3];
     w[4] = 0x8000000000000000ULL;
     for (int i = 5; i < 15; i++) w[i] = 0;
     w[15] = 256;
@@ -75,7 +73,19 @@ VK_HD void sha512_32(const uint8_t seed[32], uint8_t digest[64]) {
         d = c; c = b; b = a; a = t1 + t2;
     }
 
-    uint64_t out[8] = {a + h0, b + h1, c + h2, d + h3, e + h4, f + h5, g + h6, h + h7};
+    out[0] = a + h0; out[1] = b + h1; out[2] = c + h2; out[3] = d + h3;
+    out[4] = e + h4; out[5] = f + h5; out[6] = g + h6; out[7] = h + h7;
+}
+
+// digest[64] = SHA512(seed[32])  (byte-oriented wrapper; tests and CPU tools)
+VK_HD void sha512_32(const uint8_t seed[32], uint8_t digest[64]) {
+    uint64_t m[4], out[8];
+    for (int i = 0; i < 4; i++) {
+        uint64_t v = 0;
+        for (int j = 0; j < 8; j++) v = (v << 8) | seed[i * 8 + j];
+        m[i] = v;
+    }
+    sha512_32_core(m, out);
     for (int i = 0; i < 8; i++)
         for (int j = 0; j < 8; j++) digest[i * 8 + j] = (uint8_t)(out[i] >> (56 - 8 * j));
 }

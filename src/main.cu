@@ -38,44 +38,92 @@ struct Params {
     int first_byte;
     int keys_per_thread;
     uint64_t counter_base;
+    // word-path fields (AUDIT2 F9/F10/F11)
+    uint64_t base_be[2];   // base[0..7], base[8..15] as big-endian words
+    uint64_t target_w3;    // target bytes 24..31 as an LE word, sign bit cleared
+    uint64_t mask_w3;      // mask bytes 24..31 as an LE word, sign bit cleared
+    int use_w3;            // suffix fits in w3 (L <= 10): fast one-word compare
+    int wide;              // 16-bit signed comb table (AUDIT3 G1)
 };
 
-__global__ void vanity_kernel(const uint8_t *__restrict__ table, Params p, Found *out) {
+// K is a template parameter so the batch arrays are sized exactly (a runtime
+// K forced MAX_K-sized frames: 6656 B/thread of local memory, ~1.3 GB reserved
+// across a 4090 at full residency) and the loops can fully unroll. T is dead
+// after scalarmult, so only X/Y/Z are kept per key (AUDIT2 F5/A1).
+template <int K>
+__global__ void vanity_kernel(const uint8_t *__restrict__ table, Params p, Found *out,
+                              volatile int *found_flag) {
     const uint64_t gtid = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-    const int K = p.keys_per_thread;
 
-    ge_p3 pts[MAX_K];
-    fe prods[MAX_K];
-    uint8_t seed[32], scalar[32];
+    fe Xs[K], Ys[K], Zs[K], prods[K];
 
     for (int k = 0; k < K; k++) {
-        vk_make_seed(seed, p.base, gtid, p.counter_base + k);
-        vk_seed_to_scalar(seed, scalar);
-        pts[k] = ge_scalarmult_base(table, scalar);
-        prods[k] = k ? fe_mul(prods[k - 1], pts[k].Z) : pts[k].Z;
+        uint64_t s[4];
+        vk_seed_to_scalar_w(p.base_be, gtid, p.counter_base + k, s);
+        ge_p3 pt = p.wide ? ge_scalarmult_base16_w(table, s) : ge_scalarmult_base_w(table, s);
+        Xs[k] = pt.X;
+        Ys[k] = pt.Y;
+        Zs[k] = pt.Z;
+        prods[k] = k ? fe_mul(prods[k - 1], Zs[k]) : Zs[k];
     }
 
     // Montgomery batch inversion: one fe_invert amortized over K keys
     fe u = fe_invert(prods[K - 1]);
     for (int k = K - 1; k >= 0; k--) {
         fe zinv = k ? fe_mul(u, prods[k - 1]) : u;
-        u = fe_mul(u, pts[k].Z);
-        uint8_t pub[32];
-        ge_compress_with_zinv(pub, pts[k], zinv);
-        if (vk_match(pub, p.target, p.mask, p.first_byte)) {
-            int slot = atomicAdd(&out->count, 1);
-            if (slot < MAX_FOUND) {
-                vk_make_seed(out->seed[slot], p.base, gtid, p.counter_base + k);
-                memcpy(out->pub[slot], pub, 32);
+        u = fe_mul(u, Zs[k]);
+        ge_p3 pt{Xs[k], Ys[k], Zs[k], fe_zero()};  // T unused by compression
+
+        bool candidate;
+        if (p.use_w3) {
+            // Fast path: test every constrained bit except the x sign against
+            // the y encoding alone; x is only computed on the confirm path.
+            const uint64_t w3y = ge_compress_y_w3(pt, zinv);
+            candidate = ((w3y ^ p.target_w3) & p.mask_w3) == 0;
+        } else {
+            candidate = true;  // suffix longer than 10 chars: always full path
+        }
+        if (candidate) {
+            uint8_t pub[32];
+            ge_compress_with_zinv(pub, pt, zinv);
+            if (vk_match(pub, p.target, p.mask, p.first_byte)) {
+                int slot = atomicAdd(&out->count, 1);
+                if (slot < MAX_FOUND) {
+                    vk_make_seed(out->seed[slot], p.base, gtid, p.counter_base + k);
+                    memcpy(out->pub[slot], pub, 32);
+                }
+                __threadfence_system();
+                *found_flag = 1;  // mapped host memory: host polls without draining the GPU
             }
         }
     }
 }
 
+// Computes full public keys on-device via the word hot path (one per thread)
+// so the host can diff them against the byte-path reference. Validates device
+// codegen — host tests cannot catch nvcc/PTX-specific miscompiles.
+__global__ void selftest_kernel(const uint8_t *__restrict__ table, Params p, uint8_t *pubs) {
+    const uint64_t gtid = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    uint64_t s[4];
+    vk_seed_to_scalar_w(p.base_be, gtid, p.counter_base, s);
+    ge_p3 pt = p.wide ? ge_scalarmult_base16_w(table, s) : ge_scalarmult_base_w(table, s);
+    ge_compress_with_zinv(pubs + gtid * 32, pt, fe_invert(pt.Z));
+}
+
+static void launch_vanity(int K, int blocks, int threads, const uint8_t *table, const Params &p,
+                          Found *out, volatile int *flag) {
+    switch (K) {
+        case 4: vanity_kernel<4><<<blocks, threads>>>(table, p, out, flag); break;
+        case 8: vanity_kernel<8><<<blocks, threads>>>(table, p, out, flag); break;
+        case 16: vanity_kernel<16><<<blocks, threads>>>(table, p, out, flag); break;
+        case 32: vanity_kernel<32><<<blocks, threads>>>(table, p, out, flag); break;
+    }
+}
+
 int main(int argc, char **argv) {
     const char *suffix = nullptr, *table_path = "table.bin";
-    int device = 0, threads = 256, blocks_per_sm = 8, K = 16;
-    bool benchmark = false;
+    int device = 0, threads = 256, blocks_per_sm = 8, K = 32;  // K=32 measured best (206 vs 202 Mkeys/s at K=16)
+    bool benchmark = false, selftest = false;
     uint64_t limit = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--suffix") && i + 1 < argc) suffix = argv[++i];
@@ -85,19 +133,33 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--blocks-per-sm") && i + 1 < argc) blocks_per_sm = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--keys-per-thread") && i + 1 < argc) K = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--benchmark")) benchmark = true;
+        else if (!strcmp(argv[i], "--selftest")) selftest = true;
         else if (!strcmp(argv[i], "--limit") && i + 1 < argc) limit = strtoull(argv[++i], nullptr, 10);
         else { fprintf(stderr, "unknown arg %s\n", argv[i]); return 2; }
     }
     if (!suffix) { fprintf(stderr, "--suffix required\n"); return 2; }
-    if (K < 1 || K > MAX_K) { fprintf(stderr, "--keys-per-thread must be 1..%d\n", MAX_K); return 2; }
+    if (K != 4 && K != 8 && K != 16 && K != 32) { fprintf(stderr, "--keys-per-thread must be 4, 8, 16 or 32\n"); return 2; }
 
     Params p = {};
     p.first_byte = vk_suffix_to_target(suffix, p.target, p.mask);
     if (p.first_byte < 0) { fprintf(stderr, "bad suffix '%s'\n", suffix); return 2; }
     p.keys_per_thread = K;
     vk_random_base(p.base);
+    for (int i = 0; i < 2; i++) {
+        uint64_t v = 0;
+        for (int j = 0; j < 8; j++) v = (v << 8) | p.base[8 * i + j];
+        p.base_be[i] = v;
+    }
+    uint64_t tw = 0, mw = 0;
+    for (int j = 0; j < 8; j++) {
+        tw |= (uint64_t)p.target[24 + j] << (8 * j);
+        mw |= (uint64_t)p.mask[24 + j] << (8 * j);
+    }
+    p.target_w3 = tw & ~(1ULL << 63);
+    p.mask_w3 = mw & ~(1ULL << 63);
+    p.use_w3 = (p.first_byte >= 24);
 
-    auto table = vk_load_table(table_path);
+    auto table = vk_load_table(table_path, &p.wide);
 
     CUDA_CHECK(cudaSetDevice(device));
     cudaDeviceProp props;
@@ -105,10 +167,19 @@ int main(int argc, char **argv) {
 
     uint8_t *d_table;
     Found *d_found;
-    CUDA_CHECK(cudaMalloc(&d_table, VK_TABLE_BYTES));
-    CUDA_CHECK(cudaMemcpy(d_table, table.data(), VK_TABLE_BYTES, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMalloc(&d_table, table.size()));
+    CUDA_CHECK(cudaMemcpy(d_table, table.data(), table.size(), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMalloc(&d_found, sizeof(Found)));
     CUDA_CHECK(cudaMemset(d_found, 0, sizeof(Found)));
+
+    // Mapped host flag (AUDIT2 F13): the hunt loop polls this instead of a
+    // synchronous per-launch cudaMemcpy, so a few launches stay queued and the
+    // GPU never drains between kernels.
+    volatile int *h_flag;
+    CUDA_CHECK(cudaHostAlloc((void **)&h_flag, sizeof(int), cudaHostAllocMapped));
+    *h_flag = 0;
+    volatile int *d_flag;
+    CUDA_CHECK(cudaHostGetDevicePointer((void **)&d_flag, (void *)h_flag, 0));
 
     const int blocks = props.multiProcessorCount * blocks_per_sm;
     const uint64_t keys_per_launch = (uint64_t)blocks * threads * K;
@@ -124,17 +195,37 @@ int main(int argc, char **argv) {
     auto t0 = std::chrono::steady_clock::now();
     auto last = t0;
 
+    if (selftest) {
+        const int n = 512;
+        uint8_t *d_pubs;
+        CUDA_CHECK(cudaMalloc(&d_pubs, n * 32));
+        selftest_kernel<<<n / 256, 256>>>(d_table, p, d_pubs);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        std::vector<uint8_t> pubs(n * 32);
+        CUDA_CHECK(cudaMemcpy(pubs.data(), d_pubs, pubs.size(), cudaMemcpyDeviceToHost));
+        int bad = 0;
+        for (int i = 0; i < n; i++) {
+            uint8_t seed[32], expect[32];
+            vk_make_seed(seed, p.base, (uint64_t)i, p.counter_base);
+            vk_seed_to_pub(table.data(), p.wide, seed, expect);
+            if (memcmp(expect, &pubs[i * 32], 32) != 0) bad++;
+        }
+        printf("[gpu %d] selftest: %d/%d pubkeys match host reference%s\n",
+               device, n - bad, n, bad ? " — FAIL" : "");
+        return bad ? 1 : 0;
+    }
+
     // Benchmark mode: measure sustained throughput and exit, without needing a
     // real hunt. Matches are ignored. Runs until --limit keys are hashed, or for
     // ~5s if no limit is given. One warmup launch is excluded from the timing.
     if (benchmark) {
-        vanity_kernel<<<blocks, threads>>>(d_table, p, d_found);
+        launch_vanity(K, blocks, threads, d_table, p, d_found, d_flag);
         p.counter_base = (counter += K);
         CUDA_CHECK(cudaDeviceSynchronize());
         auto bstart = std::chrono::steady_clock::now();
         uint64_t bkeys = 0;
         while (true) {
-            vanity_kernel<<<blocks, threads>>>(d_table, p, d_found);
+            launch_vanity(K, blocks, threads, d_table, p, d_found, d_flag);
             p.counter_base = (counter += K);
             CUDA_CHECK(cudaDeviceSynchronize());
             bkeys += keys_per_launch;
@@ -148,14 +239,28 @@ int main(int argc, char **argv) {
         }
     }
 
-    while (true) {
-        vanity_kernel<<<blocks, threads>>>(d_table, p, d_found);
-        p.counter_base = (counter += K);
-        CUDA_CHECK(cudaMemcpy(&h_found, d_found, sizeof(int), cudaMemcpyDeviceToHost));
-        total += keys_per_launch;
+    // Keep up to DEPTH launches in flight; the event ring bounds the queue and
+    // the mapped flag says when to stop. No synchronous copies in the loop.
+    const int DEPTH = 3;
+    cudaEvent_t ev[DEPTH];
+    for (int i = 0; i < DEPTH; i++) CUDA_CHECK(cudaEventCreateWithFlags(&ev[i], cudaEventDisableTiming));
+    uint64_t launched = 0;
 
-        if (h_found.count > 0) {
+    while (true) {
+        launch_vanity(K, blocks, threads, d_table, p, d_found, d_flag);
+        CUDA_CHECK(cudaEventRecord(ev[launched % DEPTH]));
+        p.counter_base = (counter += K);
+        launched++;
+        if (launched >= DEPTH) {
+            CUDA_CHECK(cudaEventSynchronize(ev[(launched - DEPTH) % DEPTH]));
+            total = (launched - DEPTH + 1) * keys_per_launch;
+        }
+
+        if (*h_flag) {
+            CUDA_CHECK(cudaDeviceSynchronize());
             CUDA_CHECK(cudaMemcpy(&h_found, d_found, sizeof(Found), cudaMemcpyDeviceToHost));
+        }
+        if (h_found.count > 0) {
             int n = h_found.count < MAX_FOUND ? h_found.count : MAX_FOUND;
             for (int i = 0; i < n; i++) {
                 printf("FOUND seed=%s pub=%s\n", vk_hex(h_found.seed[i], 32).c_str(),

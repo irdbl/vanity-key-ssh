@@ -16,7 +16,10 @@ GPU_ARCH ?= -gencode arch=compute_75,code=sm_75 \
             -gencode arch=compute_120,code=compute_120
 # -Xptxas -v prints per-kernel register/spill counts, needed to tune launch
 # bounds and confirm local-memory changes.
-NVCCFLAGS ?= -O3 -std=c++17 -Xptxas -v $(GPU_ARCH)
+# -maxrregcount=128: measured +6% on RTX 4090 (201.9 vs 190.8 Mkeys/s) by
+# lifting occupancy from ~30% to ~33% at the cost of 16B of spills; 112 is
+# break-even, 96 and below lose to spill traffic.
+NVCCFLAGS ?= -O3 -std=c++17 -Xptxas -v -maxrregcount=128 $(GPU_ARCH)
 
 all: host
 
@@ -38,6 +41,10 @@ bin/gpu_vanity: src/main.cu src/*.h | bin
 
 table.bin: tools/gen_table.py tools/ed25519_ref.py
 	python3 tools/gen_table.py $@
+
+# 16-bit signed comb, ~48MB, ~1.6x faster on large-L2 GPUs (AUDIT3 G1)
+table16.bin: tools/gen_table.py tools/ed25519_ref.py
+	python3 tools/gen_table.py $@ --wide
 
 test: host table.bin
 	python3 -m pytest tests/ -v

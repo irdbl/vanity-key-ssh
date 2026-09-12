@@ -31,7 +31,8 @@ int main(int argc, char **argv) {
     uint8_t target[32], mask[32];
     int first = vk_suffix_to_target(suffix, target, mask);
     if (first < 0) { fprintf(stderr, "bad suffix '%s'\n", suffix); return 2; }
-    auto table = vk_load_table(table_path);
+    int wide = 0;
+    auto table = vk_load_table(table_path, &wide);
 
     uint8_t base[16];
     vk_random_base(base);
@@ -60,7 +61,8 @@ int main(int argc, char **argv) {
                 for (int k = 0; k < K; k++) {
                     vk_make_seed(seed, base, (uint64_t)t, c0 + k);
                     vk_seed_to_scalar(seed, scalar);
-                    pts[k] = ge_scalarmult_base(tab, scalar);
+                    pts[k] = wide ? ge_scalarmult_base16(tab, scalar)
+                                  : ge_scalarmult_base(tab, scalar);
                     prods[k] = k ? fe_mul(prods[k - 1], pts[k].Z) : pts[k].Z;
                 }
                 fe u = fe_invert(prods[K - 1]);

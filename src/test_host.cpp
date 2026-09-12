@@ -20,16 +20,18 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (!strcmp(argv[1], "pub")) {
-        auto table = vk_load_table(argv[2]);
+        int wide = 0;
+        auto table = vk_load_table(argv[2], &wide);
         uint8_t seed[32], pub[32];
         if (!vk_unhex(argv[3], seed, 32)) return 2;
-        vk_seed_to_pub(table.data(), seed, pub);
+        vk_seed_to_pub(table.data(), wide, seed, pub);
         printf("%s\n", vk_hex(pub, 32).c_str());
         return 0;
     }
     if (!strcmp(argv[1], "pubbatch")) {
         // mirrors the kernel's Montgomery batch-inversion structure
-        auto table = vk_load_table(argv[2]);
+        int wide = 0;
+        auto table = vk_load_table(argv[2], &wide);
         int n = argc - 3;
         std::vector<ge_p3> pts(n);
         std::vector<fe> prods(n);
@@ -37,7 +39,8 @@ int main(int argc, char **argv) {
             uint8_t seed[32], scalar[32];
             if (!vk_unhex(argv[3 + i], seed, 32)) return 2;
             vk_seed_to_scalar(seed, scalar);
-            pts[i] = ge_scalarmult_base(table.data(), scalar);
+            pts[i] = wide ? ge_scalarmult_base16(table.data(), scalar)
+                          : ge_scalarmult_base(table.data(), scalar);
             prods[i] = i ? fe_mul(prods[i - 1], pts[i].Z) : pts[i].Z;
         }
         fe u = fe_invert(prods[n - 1]);

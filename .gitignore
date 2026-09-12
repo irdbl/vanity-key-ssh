@@ -7,3 +7,4 @@ __pycache__/
 id_ed25519*
 .vast_fleet
 .pytest_cache/
+table16.bin

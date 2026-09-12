@@ -8,6 +8,28 @@ host test suite cannot do. Payoff figures are estimates until measured. See
 "Checked and correct" list; cross-references there to F4/F5/F9-F13/F18/F19
 point into this file.
 
+## Measured outcomes (2026-09-12, RTX 4090 @ vast.ai, `-arch=native`, nvcc 12.4)
+
+Baseline at session start: **190.8 Mkeys/s** (K=16). After this file plus
+AUDIT3 G1: **333.9 Mkeys/s** (K=32, 16-bit signed comb).
+
+| # | Result |
+|---|---|
+| F18 | **Done.** `--benchmark`/`--limit` verified on-device; also added `--selftest` (512 device pubkeys diffed against the host reference — this is what lets kernel changes land safely). |
+| F5/A1 | **Done, footprint only.** Template K + dropping T: frame 6656→2816 B (K=16), 896 B (K=4); throughput unchanged — the kernel was never spill-bound. Frees ~1 GB VRAM reservation, makes 8 GB cards viable. |
+| F9/F10/F11 | **Done, ~0% each.** Word-path SHA-512/scalar, one-u64 y-compare, deferred x. Individually unmeasurable under the scalarmult's dependency chain; kept as hygiene (regs 138→130) and as groundwork for multi-target. |
+| F4 | **REFUTED on nvcc 12.4.** Two hand PTX variants (mul.lo/hi + add.cc, and fused mad.lo.cc/madc.hi) both measured ~174–176 vs 191 Mkeys/s portable — nvcc's own `__int128` lowering wins; inline-asm blocks defeat its scheduling. Reverted; do not re-attempt without SASS-level evidence. |
+| (new) | **maxrregcount=128: +6%** (190.8→201.9). Occupancy was the real ALU-side lever; 112 break-even, ≤96 loses to spills. In the Makefile. |
+| F13 | **Done.** Mapped found-flag + 3-deep event ring; the hunt loop no longer drains the GPU per launch. Small (~1%), mostly latency hygiene. |
+| F12 | **Skipped, documented.** Pure-ALU trims (F9–F11) measured 0%, so the ~3% unpack saving is not on the critical path; superseded by AUDIT3 G1 halving the window count. |
+| F19 | **Done.** vast_launch.sh ranks by $/key (rate table, 4090 measured), accepts multi-GPU offers with cpu_cores ≥ GPUs, COUNT now means total GPUs. |
+| K sweep | K=32 default (206.5 vs 201.7 @ K=16 on 8-bit; 333.9 vs 324.8 on 16-bit comb). |
+
+The through-line: the kernel is bound by the *dependent-addition chain* of the
+comb walk, not by instruction count, local memory, or the compare path. That
+is why only occupancy (+6%) and AUDIT3 G1's halving of the chain (+61%) moved
+the number.
+
 ## Summary
 
 | # | Finding | Payoff | Effort | Breaks key format? |

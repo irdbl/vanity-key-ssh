@@ -41,17 +41,29 @@ static int vk_suffix_to_target(const char *suffix, uint8_t target[32], uint8_t m
     return -1;
 }
 
-static std::vector<uint8_t> vk_load_table(const char *path) {
+// Loads either table format; file size discriminates. *wide is set to 1 for
+// the 16-bit signed comb (~48 MB), 0 for the 8-bit comb (768 KB).
+static std::vector<uint8_t> vk_load_table(const char *path, int *wide) {
     FILE *f = fopen(path, "rb");
     if (!f) {
-        fprintf(stderr, "cannot open table %s (run: python3 tools/gen_table.py %s)\n", path, path);
+        fprintf(stderr, "cannot open table %s (run: python3 tools/gen_table.py %s [--wide])\n", path, path);
         exit(1);
     }
-    std::vector<uint8_t> table(VK_TABLE_BYTES);
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz == VK_TABLE_BYTES) *wide = 0;
+    else if (sz == VK_TABLE16_BYTES) *wide = 1;
+    else {
+        fprintf(stderr, "table %s: unexpected size %ld (want %d or %d)\n",
+                path, sz, VK_TABLE_BYTES, VK_TABLE16_BYTES);
+        exit(1);
+    }
+    std::vector<uint8_t> table((size_t)sz);
     size_t n = fread(table.data(), 1, table.size(), f);
     fclose(f);
     if (n != table.size()) {
-        fprintf(stderr, "table %s truncated (%zu bytes, want %d)\n", path, n, VK_TABLE_BYTES);
+        fprintf(stderr, "table %s: short read\n", path);
         exit(1);
     }
     return table;
