@@ -32,8 +32,9 @@ python3 tools/gen_table.py table.bin && make gpu GPU_ARCH='-arch=native' && \
 SUFFIX='$SUFFIX' NTFY_TOPIC='$NTFY_TOPIC' bash scripts/entrypoint.sh"
 
 echo "searching offers: $GPU, <\$$MAX_DPH/hr..."
+# note: verified 4090s are scarce on vast; filter on reliability instead
 OFFERS=$(vastai search offers \
-    "gpu_name=$GPU num_gpus=1 rentable=true verified=true reliability>0.98 dph<$MAX_DPH" \
+    "gpu_name=$GPU num_gpus=1 rentable=true reliability>0.95 dph<$MAX_DPH" \
     -o 'dph' --raw | python3 -c "
 import json, sys
 offers = json.load(sys.stdin)
